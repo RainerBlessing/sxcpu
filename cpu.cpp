@@ -76,6 +76,12 @@ void Cpu::reset()
 	pc = 0xfff;
 }
 
+unsigned char *
+Cpu::getMode ()
+{
+	return &mode;
+}
+
 USHORT *
 Cpu::getROM ()
 {

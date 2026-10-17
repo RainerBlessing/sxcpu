@@ -55,6 +55,10 @@ public:
 	 */
 	USHORT* getPC();
 	/**
+	 * Returns a pointer to the MODE register. It is used in the debugger.
+	 */
+	unsigned char* getMode();
+	/**
 	 *  This function executes the opcode. Everytime the function is called
 	               *  several commands are executed and the function returns, so that
 	               *  the GUI controls are not blocked.
