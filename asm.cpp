@@ -501,6 +501,7 @@ bool assembleSource(const string& source, unsigned short* rom, int romSize, stri
 
 	// the words
 	string problem;
+	vector<bool> written(romSize, false);
 	for (size_t i = 0; i < items.size(); i++)
 	{
 		const Item& item = items[i];
@@ -539,7 +540,16 @@ bool assembleSource(const string& source, unsigned short* rom, int romSize, stri
 			return false;
 		}
 		for (size_t w = 0; w < words.size(); w++)
-			rom[item.address + w] = words[w];
+		{
+			int target = item.address + (int) w;
+			if (written[target])
+			{
+				*error = lineError(item.number, "address " + hexText(target) + " is used twice");
+				return false;
+			}
+			written[target] = true;
+			rom[target] = words[w];
+		}
 	}
 	return true;
 }

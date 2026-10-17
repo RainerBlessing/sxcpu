@@ -35,7 +35,8 @@ bool assemble(const std::string& line, unsigned short* opcode);
  * the address belongs to is chosen by "page" or autopage. A label wins over a
  * number of the same spelling.
  *
- * Words that nothing was assembled into get 0xFFF (unused).
+ * Words that nothing was assembled into get 0xFFF (unused). Two pieces of code
+ * must not share a word, that is an error.
  * Returns false and sets *error to "line N: ..." for the first mistake.
  */
 bool assembleSource(const std::string& source, unsigned short* rom, int romSize, std::string* error);
