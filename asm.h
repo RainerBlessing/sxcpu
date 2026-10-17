@@ -27,7 +27,7 @@ bool assemble(const std::string& line, unsigned short* opcode);
  *              page without a jump gets a "page" there as well (but not after
  *              an org: whoever jumps there sets the page).
  * A name can be used in place of a number in every instruction, also before
- * its definition. The registers have names: rtcc, pc, status, fsr, ra to re.
+ * its definition. The registers have names: indf, rtcc, pc, status, fsr, ra to re.
  * w, m, option and wdt are reserved. Names are case sensitive.
  * jmp and call may use a label instead of an address; jmp keeps the low
  * nine bits of its address, call the low eight. A call to a label in the

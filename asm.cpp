@@ -255,10 +255,10 @@ namespace
 
 	Symbols registerNames()
 	{
-		static const char* names[] = { "rtcc", "pc", "status", "fsr", "ra", "rb", "rc", "rd", "re" };
-		static const int numbers[] = { 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+		static const char* names[] = { "indf", "rtcc", "pc", "status", "fsr", "ra", "rb", "rc", "rd", "re" };
+		static const int numbers[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
 		Symbols symbols;
-		for (int i = 0; i < 9; i++)
+		for (int i = 0; i < 10; i++)
 		{
 			Symbol symbol = { numbers[i], false };
 			symbols[names[i]] = symbol;
