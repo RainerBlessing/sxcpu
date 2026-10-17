@@ -1,5 +1,6 @@
 #include "asm.h"
 #include "disasm.h"
+#include <algorithm>
 #include <cctype>
 #include <map>
 #include <sstream>
@@ -85,10 +86,18 @@ bool assemble(const string& line, unsigned short* opcode)
 
 namespace
 {
+	struct Symbol
+	{
+		int value;
+		bool label;		// jmp and call keep only the low bits of a label
+	};
+	typedef map<string, Symbol> Symbols;
+
 	struct SourceLine
 	{
 		int number;
 		int address;
+		bool data;		// dw: text holds the values, otherwise an instruction
 		string text;
 	};
 
@@ -100,7 +109,22 @@ namespace
 		return text.substr(first, text.find_last_not_of(" \t\r") - first + 1);
 	}
 
-	bool isLabelName(const string& name)
+	string lowerCase(string text)
+	{
+		for (size_t i = 0; i < text.size(); i++)
+			text[i] = tolower((unsigned char) text[i]);
+		return text;
+	}
+
+	// the first word of a line and what follows it
+	string splitWord(const string& line, string* rest)
+	{
+		size_t end = line.find_first_of(" \t");
+		*rest = end == string::npos ? "" : trim(line.substr(end));
+		return line.substr(0, end);
+	}
+
+	bool isName(const string& name)
 	{
 		if (name.empty() || isdigit((unsigned char) name[0]))
 			return false;
@@ -112,6 +136,12 @@ namespace
 		return true;
 	}
 
+	// operands of the instructions that are no names of the user
+	bool isReservedWord(const string& name)
+	{
+		return name == "w" || name == "m" || name == "option" || name == "wdt";
+	}
+
 	bool parseHex(const string& text, int* value)
 	{
 		string digits = plainNumber(text);
@@ -121,6 +151,25 @@ namespace
 		return true;
 	}
 
+	// a name of the symbol table or a hexadecimal number
+	bool parseValue(const string& text, const Symbols& symbols, int* value)
+	{
+		Symbols::const_iterator symbol = symbols.find(text);
+		if (symbol != symbols.end())
+		{
+			*value = symbol->second.value;
+			return true;
+		}
+		return parseHex(text, value);
+	}
+
+	string hexText(int value)
+	{
+		ostringstream out;
+		out << hex << value;
+		return out.str();
+	}
+
 	string lineError(int number, const string& message)
 	{
 		ostringstream out;
@@ -128,33 +177,104 @@ namespace
 		return out.str();
 	}
 
-	// "jmp loop" -> "jmp 20" with the address of loop, if the operand is a label
-	bool resolveLabel(const string& text, const map<string, int>& labels, string* resolved, string* problem)
+	// "jmp loop" -> "jmp 20", "mov counter, w" -> "mov 10, w": the names of
+	// the operands become numbers. Names that are no symbols must be hex numbers.
+	bool substituteNames(const string& text, const Symbols& symbols, string* resolved, string* problem)
 	{
-		*resolved = text;
-		string line = trim(text);
-		size_t blank = line.find_first_of(" \t");
-		if (blank == string::npos)
-			return true;
-		string mnemonic;
-		for (size_t i = 0; i < blank; i++)
-			mnemonic += tolower((unsigned char) line[i]);
-		if (mnemonic != "jmp" && mnemonic != "call")
-			return true;
+		string operands;
+		string mnemonic = splitWord(trim(text), &operands);
+		int mask = 0xfff;
+		string lower = lowerCase(mnemonic);
+		if (lower == "jmp")
+			mask = 0x1ff;
+		else if (lower == "call")
+			mask = 0xff;
 
-		string operand = trim(line.substr(blank));
-		map<string, int>::const_iterator label = labels.find(operand);
-		if (label == labels.end())
+		string out;
+		for (size_t i = 0; i < operands.size();)
 		{
-			int number;
-			if (!isLabelName(operand) || parseHex(operand, &number))
-				return true;
-			*problem = "unknown label " + operand;
+			if (!isalnum((unsigned char) operands[i]) && operands[i] != '_')
+			{
+				out += operands[i++];
+				continue;
+			}
+			size_t end = i;
+			while (end < operands.size() && (isalnum((unsigned char) operands[end]) || operands[end] == '_'))
+				end++;
+			string word = operands.substr(i, end - i);
+			bool port = i > 0 && operands[i - 1] == '!';
+			Symbols::const_iterator symbol = symbols.find(word);
+			if (port || isReservedWord(lowerCase(word)) || isdigit((unsigned char) word[0]))
+				out += word;
+			else if (symbol != symbols.end())
+				out += hexText(symbol->second.label ? symbol->second.value & mask : symbol->second.value);
+			else
+			{
+				int number;
+				if (!parseHex(word, &number))
+				{
+					*problem = "unknown name " + word;
+					return false;
+				}
+				out += word;
+			}
+			i = end;
+		}
+		*resolved = lower + (out.empty() ? "" : " " + out);
+		return true;
+	}
+
+	// the values of a dw line, one ROM word each
+	bool dataValues(const string& text, const Symbols& symbols, vector<int>* values, string* problem)
+	{
+		istringstream in(text);
+		string item;
+		while (getline(in, item, ','))
+		{
+			int value;
+			item = trim(item);
+			if (!parseValue(item, symbols, &value) || value > 0xfff)
+			{
+				*problem = "bad value '" + item + "' for dw";
+				return false;
+			}
+			values->push_back(value);
+		}
+		if (values->empty())
+		{
+			*problem = "dw needs a value";
 			return false;
 		}
-		ostringstream out;
-		out << mnemonic << " " << hex << (label->second & (mnemonic == "jmp" ? 0x1ff : 0xff));
-		*resolved = out.str();
+		return true;
+	}
+
+	Symbols registerNames()
+	{
+		static const char* names[] = { "rtcc", "pc", "status", "fsr", "ra", "rb", "rc", "rd", "re" };
+		static const int numbers[] = { 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+		Symbols symbols;
+		for (int i = 0; i < 9; i++)
+		{
+			Symbol symbol = { numbers[i], false };
+			symbols[names[i]] = symbol;
+		}
+		return symbols;
+	}
+
+	bool define(const string& name, int value, bool label, Symbols* symbols, string* problem)
+	{
+		if (!isName(name) || isReservedWord(lowerCase(name)))
+		{
+			*problem = "bad name '" + name + "'";
+			return false;
+		}
+		if (symbols->count(name))
+		{
+			*problem = name + " is defined twice";
+			return false;
+		}
+		Symbol symbol = { value, label };
+		(*symbols)[name] = symbol;
 		return true;
 	}
 }
@@ -164,13 +284,13 @@ bool assembleSource(const string& source, unsigned short* rom, int romSize, stri
 	for (int i = 0; i < romSize; i++)
 		rom[i] = 0xfff;
 
-	// first pass: addresses of the labels
-	map<string, int> labels;
+	// first pass: addresses of the labels, values of the names
+	Symbols symbols = registerNames();
 	vector<SourceLine> lines;
 	int address = 0;
 	int number = 0;
 	istringstream in(source);
-	string raw;
+	string raw, problem;
 	while (getline(in, raw))
 	{
 		number++;
@@ -179,62 +299,96 @@ bool assembleSource(const string& source, unsigned short* rom, int romSize, stri
 		size_t colon = text.find(':');
 		if (colon != string::npos)
 		{
-			string name = trim(text.substr(0, colon));
-			if (!isLabelName(name))
+			if (!define(trim(text.substr(0, colon)), address, true, &symbols, &problem))
 			{
-				*error = lineError(number, "bad label name '" + name + "'");
+				*error = lineError(number, problem);
 				return false;
 			}
-			if (labels.count(name))
-			{
-				*error = lineError(number, "label " + name + " is defined twice");
-				return false;
-			}
-			labels[name] = address;
 			text = trim(text.substr(colon + 1));
 		}
 		if (text.empty())
 			continue;
 
-		if (normalize(text).compare(0, 4, "org ") == 0)
+		string rest;
+		string word = splitWord(text, &rest);
+		string keyword = lowerCase(word);
+		string rest2;
+		string second = lowerCase(splitWord(rest, &rest2));
+
+		if (keyword == "org")
 		{
 			int target;
-			if (!parseHex(normalize(text).substr(4), &target) || target >= romSize)
+			if (!parseValue(rest, symbols, &target) || target >= romSize)
 			{
 				*error = lineError(number, "bad org address");
 				return false;
 			}
 			address = target;
-			continue;
 		}
-
-		SourceLine line = { number, address, text };
-		lines.push_back(line);
-		address++;
+		else if (second == "equ")
+		{
+			int value;
+			if (!parseValue(rest2, symbols, &value) || value > 0xfff)
+			{
+				*error = lineError(number, "bad value '" + rest2 + "' for equ");
+				return false;
+			}
+			if (!define(word, value, false, &symbols, &problem))
+			{
+				*error = lineError(number, problem);
+				return false;
+			}
+		}
+		else if (keyword == "dw")
+		{
+			SourceLine line = { number, address, true, rest };
+			lines.push_back(line);
+			address += 1 + count(rest.begin(), rest.end(), ',');
+		}
+		else
+		{
+			SourceLine line = { number, address, false, text };
+			lines.push_back(line);
+			address++;
+		}
 	}
 
-	// second pass: the opcodes
+	// second pass: the words
 	for (size_t i = 0; i < lines.size(); i++)
 	{
 		const SourceLine& line = lines[i];
-		if (line.address >= romSize)
+		vector<int> words;
+		if (line.data)
+		{
+			if (!dataValues(line.text, symbols, &words, &problem))
+			{
+				*error = lineError(line.number, problem);
+				return false;
+			}
+		}
+		else
+		{
+			string resolved;
+			unsigned short opcode;
+			if (!substituteNames(line.text, symbols, &resolved, &problem))
+			{
+				*error = lineError(line.number, problem);
+				return false;
+			}
+			if (!assemble(resolved, &opcode))
+			{
+				*error = lineError(line.number, "cannot assemble '" + line.text + "'");
+				return false;
+			}
+			words.push_back(opcode);
+		}
+		if (line.address + (int) words.size() > romSize)
 		{
 			*error = lineError(line.number, "address beyond the end of the ROM");
 			return false;
 		}
-		string resolved, problem;
-		unsigned short opcode;
-		if (!resolveLabel(line.text, labels, &resolved, &problem))
-		{
-			*error = lineError(line.number, problem);
-			return false;
-		}
-		if (!assemble(resolved, &opcode))
-		{
-			*error = lineError(line.number, "cannot assemble '" + line.text + "'");
-			return false;
-		}
-		rom[line.address] = opcode;
+		for (size_t w = 0; w < words.size(); w++)
+			rom[line.address + w] = words[w];
 	}
 	return true;
 }

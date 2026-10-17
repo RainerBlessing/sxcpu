@@ -16,6 +16,11 @@ bool assemble(const std::string& line, unsigned short* opcode);
  * One instruction per line, in the syntax of assemble(). Besides that:
  *   name:      a label, alone or in front of an instruction
  *   org addr   continue at the (hexadecimal) address
+ *   name equ v a name for a number, e.g. "counter equ 10"; no address is used
+ *   dw v, ...  raw 12 bit words
+ * A name can be used in place of a number in every instruction, also before
+ * its definition. The registers have names: rtcc, pc, status, fsr, ra to re.
+ * w, m, option and wdt are reserved. Names are case sensitive.
  * jmp and call may use a label instead of an address; jmp keeps the low
  * nine bits of its address, call the low eight. The page the address belongs
  * to is not chosen here, use "page" for that. A label wins over a number of
