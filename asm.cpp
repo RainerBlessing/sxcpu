@@ -286,7 +286,10 @@ namespace
 
 namespace
 {
-	enum Kind { NOTHING, ORG, EQU, DW, CODE, AUTOPAGE };
+	const int PAGE_WORDS = 512;
+	const int PAGE_HALF = 256;
+
+	enum Kind { NOTHING, ORG, FIRSTHALF, EQU, DW, CODE, AUTOPAGE };
 
 	struct Item
 	{
@@ -296,7 +299,8 @@ namespace
 		string name;		// EQU: the name
 		string text;		// the rest of the line
 		bool autopage;		// CODE: page instructions are inserted
-		int address;		// where the item (or its inserted page) starts
+		int address;		// where the item (or its inserted pages) starts
+		bool boundaryPage;	// CODE: a page instruction in front, the code runs into a new page
 	};
 
 	// Cuts the source into items.
@@ -310,7 +314,7 @@ namespace
 		{
 			number++;
 			string text = trim(raw.substr(0, raw.find(';')));
-			Item item = { number, NOTHING, "", "", "", autopage, 0 };
+			Item item = { number, NOTHING, "", "", "", autopage, 0, false };
 
 			size_t colon = text.find(':');
 			if (colon != string::npos)
@@ -336,6 +340,8 @@ namespace
 				item.kind = ORG;
 				item.text = rest;
 			}
+			else if (keyword == "firsthalf")
+				item.kind = FIRSTHALF;
 			else if (keyword == "autopage")
 			{
 				string mode = lowerCase(rest);
@@ -374,10 +380,13 @@ namespace
 	{
 		*symbols = registerNames();
 		int address = 0;
+		bool sequential = false;	// reached from the item before, not by org or firsthalf
 		string problem;
 		for (size_t i = 0; i < items->size(); i++)
 		{
 			Item& item = (*items)[i];
+			// code that runs on into the next page has to set the page there
+			item.boundaryPage = item.kind == CODE && item.autopage && sequential && address % PAGE_WORDS == 0;
 			item.address = address;
 			if (!item.label.empty() && !define(item.label, address, true, symbols, &problem))
 			{
@@ -394,6 +403,19 @@ namespace
 					return false;
 				}
 				address = value;
+				sequential = false;
+				break;
+			case FIRSTHALF:
+				if (address & PAGE_HALF)
+				{
+					address = (address | (PAGE_WORDS - 1)) + 1;
+					if (address >= romSize)
+					{
+						*error = lineError(item.number, "firsthalf moves beyond the end of the ROM");
+						return false;
+					}
+					sequential = false;
+				}
 				break;
 			case EQU:
 				if (!parseValue(item.text, *symbols, &value) || value > 0xfff)
@@ -409,9 +431,11 @@ namespace
 				break;
 			case DW:
 				address += 1 + count(item.text.begin(), item.text.end(), ',');
+				sequential = true;
 				break;
 			case CODE:
-				address += extraPage.count(i) ? 2 : 1;
+				address += (item.boundaryPage ? 1 : 0) + (extraPage.count(i) ? 1 : 0) + 1;
+				sequential = true;
 				break;
 			default:
 				break;
@@ -491,6 +515,8 @@ bool assembleSource(const string& source, unsigned short* rom, int romSize, stri
 		}
 		else if (item.kind == CODE)
 		{
+			if (item.boundaryPage)
+				words.push_back(0x010 | (item.address / PAGE_WORDS));
 			if (extraPage.count(i))
 				words.push_back(0x010 | extraPage[i]);
 			string resolved;
