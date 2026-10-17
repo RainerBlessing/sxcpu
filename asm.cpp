@@ -206,6 +206,11 @@ namespace
 			Symbols::const_iterator symbol = symbols.find(word);
 			if (port || isReservedWord(lowerCase(word)) || isdigit((unsigned char) word[0]))
 				out += word;
+			else if (symbol != symbols.end() && symbol->second.label && lower == "call" && (symbol->second.value & 0x100))
+			{
+				*problem = "call target " + word + " is in the second half of a page";
+				return false;
+			}
 			else if (symbol != symbols.end())
 				out += hexText(symbol->second.label ? symbol->second.value & mask : symbol->second.value);
 			else

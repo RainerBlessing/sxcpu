@@ -26,9 +26,10 @@ bool assemble(const std::string& line, unsigned short* opcode);
  * its definition. The registers have names: rtcc, pc, status, fsr, ra to re.
  * w, m, option and wdt are reserved. Names are case sensitive.
  * jmp and call may use a label instead of an address; jmp keeps the low
- * nine bits of its address, call the low eight. The page the address belongs
- * to is not chosen here, use "page" for that. A label wins over a number of
- * the same spelling.
+ * nine bits of its address, call the low eight. A call to a label in the
+ * second half of a page (bit 8 set) cannot be coded and is an error. The page
+ * the address belongs to is chosen by "page" or autopage. A label wins over a
+ * number of the same spelling.
  *
  * Words that nothing was assembled into get 0xFFF (unused).
  * Returns false and sets *error to "line N: ..." for the first mistake.
