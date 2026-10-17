@@ -10,4 +10,20 @@
  */
 bool assemble(const std::string& line, unsigned short* opcode);
 
+/**
+ * Assembles a whole source text into a ROM image of romSize words.
+ *
+ * One instruction per line, in the syntax of assemble(). Besides that:
+ *   name:      a label, alone or in front of an instruction
+ *   org addr   continue at the (hexadecimal) address
+ * jmp and call may use a label instead of an address; jmp keeps the low
+ * nine bits of its address, call the low eight. The page the address belongs
+ * to is not chosen here, use "page" for that. A label wins over a number of
+ * the same spelling.
+ *
+ * Words that nothing was assembled into get 0xFFF (unused).
+ * Returns false and sets *error to "line N: ..." for the first mistake.
+ */
+bool assembleSource(const std::string& source, unsigned short* rom, int romSize, std::string* error);
+
 #endif /*ASM_H_*/

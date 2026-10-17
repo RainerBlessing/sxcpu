@@ -10,6 +10,7 @@ dependency on SDL, wxWidgets or curses.
   front end. Pass `NULL` as video for a front end without screen.
 - `disassemble()` (`disasm.h`): opcode to text for a debugger.
 - `assemble()` (`asm.h`): one line of assembler to an opcode, the reverse of `disassemble()`.
+- `assembleSource()` (`asm.h`): a whole source text with labels and `org` into a ROM image.
 
 ## Use it
 
