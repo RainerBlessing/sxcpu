@@ -239,21 +239,14 @@ void Cpu::skipFollowing()
 
 void Cpu::pushReturnAddress(USHORT address)
 {
+	// eight entries; a ninth call overwrites the oldest one
 	*sp = address;
-	if (sp == Stack + 8)
-	{
-		sp = Stack;
-	}
-	else sp++;
+	sp = (sp == Stack + 7) ? Stack : sp + 1;
 }
 
 USHORT Cpu::popReturnAddress()
 {
-	if (sp == Stack)
-	{
-		sp = Stack + 8;
-	}
-	else sp--;
+	sp = (sp == Stack) ? Stack + 7 : sp - 1;
 	return *sp;
 }
 
