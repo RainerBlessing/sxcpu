@@ -1,5 +1,6 @@
 #ifndef ASM_H_
 #define ASM_H_
+#include <map>
 #include <string>
 
 /**
@@ -37,8 +38,11 @@ bool assemble(const std::string& line, unsigned short* opcode);
  *
  * Words that nothing was assembled into get 0xFFF (unused). Two pieces of code
  * must not share a word, that is an error.
- * Returns false and sets *error to "line N: ..." for the first mistake.
+ * Returns false and sets *error to "line N: ..." for the first mistake. If `labels` is
+ * given it gets the address of every label (not of the names from equ and not of the
+ * registers) when the source is assembled.
  */
-bool assembleSource(const std::string& source, unsigned short* rom, int romSize, std::string* error);
+bool assembleSource(const std::string& source, unsigned short* rom, int romSize, std::string* error,
+                    std::map<std::string, int>* labels = 0);
 
 #endif /*ASM_H_*/

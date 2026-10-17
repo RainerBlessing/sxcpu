@@ -469,7 +469,7 @@ namespace
 	}
 }
 
-bool assembleSource(const string& source, unsigned short* rom, int romSize, string* error)
+bool assembleSource(const string& source, unsigned short* rom, int romSize, string* error, map<string, int>* labels)
 {
 	for (int i = 0; i < romSize; i++)
 		rom[i] = 0xfff;
@@ -549,6 +549,14 @@ bool assembleSource(const string& source, unsigned short* rom, int romSize, stri
 			}
 			written[target] = true;
 			rom[target] = words[w];
+		}
+	}
+	if (labels != NULL)
+	{
+		for (Symbols::const_iterator symbol = symbols.begin(); symbol != symbols.end(); ++symbol)
+		{
+			if (symbol->second.label)
+				(*labels)[symbol->first] = symbol->second.value;
 		}
 	}
 	return true;
