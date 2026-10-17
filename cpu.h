@@ -30,6 +30,7 @@ using std::string;
 class Cpu
 {
 public:
+	/** @param video Receives the colour of port RE, or NULL if there is no screen. */
 	Cpu(VideoPort* video);
 	/**
 	 * Returns a pointer to ROM. It is used in the debugger.

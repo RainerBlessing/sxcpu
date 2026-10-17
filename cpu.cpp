@@ -261,7 +261,8 @@ void Cpu::portWritten(USHORT fr, unsigned char value)
 			joystick();
 			break;
 		case 4:
-			video->changeVideo(cycle, value);
+			if (video != NULL)
+				video->changeVideo(cycle, value);
 			break;
 		default:
 			break;
@@ -292,7 +293,8 @@ bool Cpu::portBitWritten(USHORT fr, USHORT bit, bool set)
 			sram();
 			break;
 		case 4:
-			video->changeVideo(cycle, RAM[fr]);
+			if (video != NULL)
+				video->changeVideo(cycle, RAM[fr]);
 			break;
 		default:
 			break;
