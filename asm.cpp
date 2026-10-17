@@ -279,116 +279,236 @@ namespace
 	}
 }
 
+namespace
+{
+	enum Kind { NOTHING, ORG, EQU, DW, CODE, AUTOPAGE };
+
+	struct Item
+	{
+		int number;		// line of the source
+		Kind kind;
+		string label;		// defined in front of the item, may be empty
+		string name;		// EQU: the name
+		string text;		// the rest of the line
+		bool autopage;		// CODE: page instructions are inserted
+		int address;		// where the item (or its inserted page) starts
+	};
+
+	// Cuts the source into items.
+	bool parseSource(const string& source, vector<Item>* items, string* error)
+	{
+		istringstream in(source);
+		string raw;
+		int number = 0;
+		bool autopage = false;
+		while (getline(in, raw))
+		{
+			number++;
+			string text = trim(raw.substr(0, raw.find(';')));
+			Item item = { number, NOTHING, "", "", "", autopage, 0 };
+
+			size_t colon = text.find(':');
+			if (colon != string::npos)
+			{
+				item.label = trim(text.substr(0, colon));
+				if (!isName(item.label) || isReservedWord(lowerCase(item.label)))
+				{
+					*error = lineError(number, "bad name '" + item.label + "'");
+					return false;
+				}
+				text = trim(text.substr(colon + 1));
+			}
+
+			string rest;
+			string word = splitWord(text, &rest);
+			string keyword = lowerCase(word);
+			string rest2;
+			string second = lowerCase(splitWord(rest, &rest2));
+			if (text.empty())
+				item.kind = NOTHING;
+			else if (keyword == "org")
+			{
+				item.kind = ORG;
+				item.text = rest;
+			}
+			else if (keyword == "autopage")
+			{
+				string mode = lowerCase(rest);
+				if (mode != "on" && mode != "off")
+				{
+					*error = lineError(number, "autopage needs on or off");
+					return false;
+				}
+				autopage = mode == "on";
+				item.kind = AUTOPAGE;
+			}
+			else if (second == "equ")
+			{
+				item.kind = EQU;
+				item.name = word;
+				item.text = rest2;
+			}
+			else if (keyword == "dw")
+			{
+				item.kind = DW;
+				item.text = rest;
+			}
+			else
+			{
+				item.kind = CODE;
+				item.text = text;
+			}
+			items->push_back(item);
+		}
+		return true;
+	}
+
+	// Gives every item its address and every label its value. Items in
+	// extraPage get a page instruction in front of them.
+	bool layout(vector<Item>* items, const map<size_t, int>& extraPage, int romSize, Symbols* symbols, string* error)
+	{
+		*symbols = registerNames();
+		int address = 0;
+		string problem;
+		for (size_t i = 0; i < items->size(); i++)
+		{
+			Item& item = (*items)[i];
+			item.address = address;
+			if (!item.label.empty() && !define(item.label, address, true, symbols, &problem))
+			{
+				*error = lineError(item.number, problem);
+				return false;
+			}
+			int value;
+			switch (item.kind)
+			{
+			case ORG:
+				if (!parseValue(item.text, *symbols, &value) || value >= romSize)
+				{
+					*error = lineError(item.number, "bad org address");
+					return false;
+				}
+				address = value;
+				break;
+			case EQU:
+				if (!parseValue(item.text, *symbols, &value) || value > 0xfff)
+				{
+					*error = lineError(item.number, "bad value '" + item.text + "' for equ");
+					return false;
+				}
+				if (!define(item.name, value, false, symbols, &problem))
+				{
+					*error = lineError(item.number, problem);
+					return false;
+				}
+				break;
+			case DW:
+				address += 1 + count(item.text.begin(), item.text.end(), ',');
+				break;
+			case CODE:
+				address += extraPage.count(i) ? 2 : 1;
+				break;
+			default:
+				break;
+			}
+		}
+		return true;
+	}
+
+	// The page a jmp or call to a label needs, if it is not the page the
+	// jump itself is in. Code at an address is taken to run with the page of
+	// that address.
+	bool neededPage(const Item& item, const Symbols& symbols, int* page)
+	{
+		string operand;
+		string mnemonic = lowerCase(splitWord(item.text, &operand));
+		if (mnemonic != "jmp" && mnemonic != "call")
+			return false;
+		Symbols::const_iterator target = symbols.find(operand);
+		if (target == symbols.end() || !target->second.label)
+			return false;
+		*page = target->second.value >> 9;
+		return *page != item.address >> 9;
+	}
+
+	// "page 1" written by the programmer right in front of item i
+	bool pageWrittenBefore(const vector<Item>& items, size_t i, int page)
+	{
+		if (i == 0 || !items[i].label.empty() || items[i - 1].kind != CODE)
+			return false;
+		return normalize(items[i - 1].text) == "page " + hexText(page);
+	}
+}
+
 bool assembleSource(const string& source, unsigned short* rom, int romSize, string* error)
 {
 	for (int i = 0; i < romSize; i++)
 		rom[i] = 0xfff;
 
-	// first pass: addresses of the labels, values of the names
-	Symbols symbols = registerNames();
-	vector<SourceLine> lines;
-	int address = 0;
-	int number = 0;
-	istringstream in(source);
-	string raw, problem;
-	while (getline(in, raw))
+	vector<Item> items;
+	if (!parseSource(source, &items, error))
+		return false;
+
+	// A page instruction moves the addresses behind it, which can change the
+	// page of a label. Insert them until nothing changes any more.
+	Symbols symbols;
+	map<size_t, int> extraPage;		// item -> page
+	for (bool changed = true; changed;)
 	{
-		number++;
-		string text = trim(raw.substr(0, raw.find(';')));
-
-		size_t colon = text.find(':');
-		if (colon != string::npos)
+		if (!layout(&items, extraPage, romSize, &symbols, error))
+			return false;
+		changed = false;
+		for (size_t i = 0; i < items.size(); i++)
 		{
-			if (!define(trim(text.substr(0, colon)), address, true, &symbols, &problem))
+			int page;
+			if (items[i].kind == CODE && items[i].autopage && !extraPage.count(i) &&
+					neededPage(items[i], symbols, &page) && !pageWrittenBefore(items, i, page))
 			{
-				*error = lineError(number, problem);
-				return false;
+				extraPage[i] = page;
+				changed = true;
 			}
-			text = trim(text.substr(colon + 1));
-		}
-		if (text.empty())
-			continue;
-
-		string rest;
-		string word = splitWord(text, &rest);
-		string keyword = lowerCase(word);
-		string rest2;
-		string second = lowerCase(splitWord(rest, &rest2));
-
-		if (keyword == "org")
-		{
-			int target;
-			if (!parseValue(rest, symbols, &target) || target >= romSize)
-			{
-				*error = lineError(number, "bad org address");
-				return false;
-			}
-			address = target;
-		}
-		else if (second == "equ")
-		{
-			int value;
-			if (!parseValue(rest2, symbols, &value) || value > 0xfff)
-			{
-				*error = lineError(number, "bad value '" + rest2 + "' for equ");
-				return false;
-			}
-			if (!define(word, value, false, &symbols, &problem))
-			{
-				*error = lineError(number, problem);
-				return false;
-			}
-		}
-		else if (keyword == "dw")
-		{
-			SourceLine line = { number, address, true, rest };
-			lines.push_back(line);
-			address += 1 + count(rest.begin(), rest.end(), ',');
-		}
-		else
-		{
-			SourceLine line = { number, address, false, text };
-			lines.push_back(line);
-			address++;
 		}
 	}
 
-	// second pass: the words
-	for (size_t i = 0; i < lines.size(); i++)
+	// the words
+	string problem;
+	for (size_t i = 0; i < items.size(); i++)
 	{
-		const SourceLine& line = lines[i];
+		const Item& item = items[i];
 		vector<int> words;
-		if (line.data)
+		if (item.kind == DW)
 		{
-			if (!dataValues(line.text, symbols, &words, &problem))
+			if (!dataValues(item.text, symbols, &words, &problem))
 			{
-				*error = lineError(line.number, problem);
+				*error = lineError(item.number, problem);
 				return false;
 			}
 		}
-		else
+		else if (item.kind == CODE)
 		{
+			if (extraPage.count(i))
+				words.push_back(0x010 | extraPage[i]);
 			string resolved;
 			unsigned short opcode;
-			if (!substituteNames(line.text, symbols, &resolved, &problem))
+			if (!substituteNames(item.text, symbols, &resolved, &problem))
 			{
-				*error = lineError(line.number, problem);
+				*error = lineError(item.number, problem);
 				return false;
 			}
 			if (!assemble(resolved, &opcode))
 			{
-				*error = lineError(line.number, "cannot assemble '" + line.text + "'");
+				*error = lineError(item.number, "cannot assemble '" + item.text + "'");
 				return false;
 			}
 			words.push_back(opcode);
 		}
-		if (line.address + (int) words.size() > romSize)
+		if (item.address + (int) words.size() > romSize)
 		{
-			*error = lineError(line.number, "address beyond the end of the ROM");
+			*error = lineError(item.number, "address beyond the end of the ROM");
 			return false;
 		}
 		for (size_t w = 0; w < words.size(); w++)
-			rom[line.address + w] = words[w];
+			rom[item.address + w] = words[w];
 	}
 	return true;
 }

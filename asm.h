@@ -18,6 +18,10 @@ bool assemble(const std::string& line, unsigned short* opcode);
  *   org addr   continue at the (hexadecimal) address
  *   name equ v a name for a number, e.g. "counter equ 10"; no address is used
  *   dw v, ...  raw 12 bit words
+ *   autopage on|off  put "page n" in front of every jmp and call to a label on
+ *              another page (off at the start). Code at an address is taken
+ *              to run with the page of that address, so a callee on another
+ *              page has to end with "retp".
  * A name can be used in place of a number in every instruction, also before
  * its definition. The registers have names: rtcc, pc, status, fsr, ra to re.
  * w, m, option and wdt are reserved. Names are case sensitive.
