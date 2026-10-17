@@ -132,7 +132,7 @@ string disassemble(unsigned short opc)
 	}
 	else if (mne == 4)
 	{				//clr !WDT
-		op = "clr !WDT";
+		op = "clr !wdt";
 	}
 	else if (mne >> 5 == 7)
 	{				//dec fr
@@ -169,19 +169,19 @@ string disassemble(unsigned short opc)
 	else if (mne >> 5 == 0x1b)
 	{				//RL fr
 
-		outs << "RL " << hex << (mne & 0x1f);
+		outs << "rl " << hex << (mne & 0x1f);
 		op = outs.str();
 
 	}
 	else if (mne >> 5 == 0x19)
 	{				//RR fr
-		outs << "RR " << hex << (mne & 0x1f);
+		outs << "rr " << hex << (mne & 0x1f);
 		op = outs.str();
 
 	}
 	else if (mne >> 5 == 5)
 	{				//sub fr,w
-		outs << "sub " << hex << (mne & 0x1f) << " w";
+		outs << "sub " << hex << (mne & 0x1f) << ", w";
 		op = outs.str();
 
 	}
@@ -237,7 +237,7 @@ string disassemble(unsigned short opc)
 	}
 	else if (mne >> 5 == 0x18)
 	{				//mov w,>>fr
-		outs << "mov w, <<" << hex << (mne & 0x1f);
+		outs << "mov w, >>" << hex << (mne & 0x1f);
 		op = outs.str();
 
 	}
@@ -249,7 +249,7 @@ string disassemble(unsigned short opc)
 	}
 	else if (mne == 0x42)
 	{				//TODO: mov w,m
-		outs << "mov w, m" << hex << (mne & 0x1f);
+		outs << "mov w, m";
 		op = outs.str();
 
 	}
@@ -263,12 +263,6 @@ string disassemble(unsigned short opc)
 	else if (mne >> 5 == 0x1e)
 	{				//movsz w,++fr
 		outs << "movsz w, ++" << hex << (mne & 0x1f);
-		op = outs.str();
-
-	}
-	else if (mne == 0x43)
-	{ //mov m,w
-		outs << "mov m, w";
 		op = outs.str();
 
 	}
@@ -286,13 +280,7 @@ string disassemble(unsigned short opc)
 	}
 	else if (mne > 4 && mne < 10)
 	{
-		outs << "mov !rx, w";
-		op = outs.str();
-
-	}
-	else if (mne == 2)
-	{ //mov !option,w
-		outs << "not impl: mov !option, w";
+		outs << "mov !r" << "abcde"[mne - 5] << ", w";
 		op = outs.str();
 
 	}
@@ -340,27 +328,27 @@ string disassemble(unsigned short opc)
 	}
 	else if (mne == 0x41)
 	{ //IREAD
-		outs << "IREAD";
+		outs << "iread";
 		op = outs.str();
 	}
 	else if (mne == 0xe)
 	{ //TODO: reti
-		outs << "not impl: reti";
+		outs << "reti";
 		op = outs.str();
 	}
 	else if (mne == 0xf)
 	{ //TODO: retiw
-		outs << "not impl: retiw";
+		outs << "retiw";
 		op = outs.str();
 	}
 	else if (mne >> 8 == 8)
 	{ //retw #lit
-		outs << "retw " << hex << (mne&0xff);
+		outs << "retw #" << hex << (mne&0xff);
 		op = outs.str();
 	}
 	else if (mne == 3)
 	{ //TODO: SLEEP
-		outs << "SLEEP";
+		outs << "sleep";
 		op = outs.str();
 	}
 

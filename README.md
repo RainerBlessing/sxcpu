@@ -9,6 +9,7 @@ dependency on SDL, wxWidgets or curses.
 - `VideoPort` and `SoundPort` (`cpu_ports.h`): what the CPU needs from the
   front end. Pass `NULL` as video for a front end without screen.
 - `disassemble()` (`disasm.h`): opcode to text for a debugger.
+- `assemble()` (`asm.h`): one line of assembler to an opcode, the reverse of `disassemble()`.
 
 ## Use it
 
