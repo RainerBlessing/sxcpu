@@ -515,8 +515,20 @@ bool assembleSource(const string& source, unsigned short* rom, int romSize, stri
 		for (size_t i = 0; i < items.size(); i++)
 		{
 			int page;
-			if (items[i].kind == CODE && items[i].autopage && !extraPage.count(i) &&
-					neededPage(items[i], symbols, &page) && !pageWrittenBefore(items, i, page))
+			if (items[i].kind != CODE || !items[i].autopage)
+				continue;
+			if (extraPage.count(i))
+			{
+				// the label may have moved to another page since: the page instruction
+				// stays (it cannot be taken back), but sets the right page
+				int right = neededPage(items[i], symbols, &page) ? page : items[i].address >> 9;
+				if (extraPage[i] != right)
+				{
+					extraPage[i] = right;
+					changed = true;
+				}
+			}
+			else if (neededPage(items[i], symbols, &page) && !pageWrittenBefore(items, i, page))
 			{
 				extraPage[i] = page;
 				changed = true;
