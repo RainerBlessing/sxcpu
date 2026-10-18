@@ -21,7 +21,17 @@ add_subdirectory(sxcpu)
 target_link_libraries(myprogram sxcpu)
 ```
 
-The tests are part of xgsemu, which has the video and the sound chip they need.
+## Tests
+
+The tests of the CPU, the assembler and the disassembler are in `tests/` and need only
+GoogleTest (CMake downloads it):
+
+```bash
+cmake -S . -B build && cmake --build build && ctest --test-dir build
+```
+
+A project that uses sxcpu sets `SXCPU_BUILD_TESTS` to build them as well. The tests that need
+the video, the sound chip or program files are part of xgsemu.
 
 ## License
 
