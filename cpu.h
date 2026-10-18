@@ -32,6 +32,9 @@ class Cpu
 public:
 	/** @param video Receives the colour of port RE, or NULL if there is no screen. */
 	Cpu(VideoPort* video);
+	// The registers (rtcc, status, ...) point into the RAM of the object, a copy would point into the original.
+	Cpu(const Cpu&) = delete;
+	Cpu& operator=(const Cpu&) = delete;
 	/**
 	 * Returns a pointer to ROM. It is used in the debugger.
 	 * @return 
@@ -66,7 +69,7 @@ public:
 	void execute();
 
 	/**
-	 * Clears RAM, ROM and sets pc to 0xfff
+	 * Clears RAM, the SRAM and the port state and sets pc to 0xfff. The program in ROM is kept.
 	 */
 	void reset();
 

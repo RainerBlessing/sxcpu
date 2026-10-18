@@ -221,18 +221,18 @@ void Cpu::setDigitCarry(bool digitCarry)
 void Cpu::next(int cycles)
 {
 	cycle += cycles;
-	pc++;
+	pc = (pc + 1) & 0xfff; // the program counter has 12 bits and wraps around
 }
 
 // The instruction after a skipping one is not executed, page and bank
 // instructions in front of it are skipped as well.
 void Cpu::skipFollowing()
 {
-	pc++;
+	pc = (pc + 1) & 0xfff;
 	cycle++;
 	while (ROM[pc] >> 3 == 2 || ROM[pc] >> 3 == 3)
 	{
-		pc++;
+		pc = (pc + 1) & 0xfff;
 		cycle++;
 	}
 }
@@ -258,6 +258,9 @@ void Cpu::portWritten(USHORT fr, unsigned char value)
 	{
 		case 0:
 			joystick();
+			break;
+		case 2:
+			sram();
 			break;
 		case 4:
 			if (video != NULL)
@@ -309,8 +312,8 @@ void Cpu::jmp(USHORT mne)
 
 void Cpu::call(USHORT mne)
 {
-	pushReturnAddress(pc + 1);
-	pc = (*status & 0xe0) << 4 | mne & 0xff;
+	pushReturnAddress((pc + 1) & 0xfff);
+	pc = ((*status & 0xe0) << 4) | (mne & 0xff);
 	cycle += 3;
 }
 
@@ -445,9 +448,9 @@ void Cpu::clrFr(USHORT mne)
 	USHORT fr = registerAddress(mne);
 	RAM[fr] = 0;
 	registerWritten(fr);
-	portWritten(fr, 0);
 	setZero(true);
 	next();
+	portWritten(fr, 0);
 }
 
 void Cpu::decFr(USHORT mne)
@@ -456,8 +459,8 @@ void Cpu::decFr(USHORT mne)
 	RAM[fr] -= 1;
 	registerWritten(fr);
 	setZero(RAM[fr] == 0);
-	portWritten(fr, RAM[fr]);
 	next();
+	portWritten(fr, RAM[fr]);
 }
 
 void Cpu::incFr(USHORT mne)
@@ -466,8 +469,8 @@ void Cpu::incFr(USHORT mne)
 	RAM[fr]++;
 	registerWritten(fr);
 	setZero(RAM[fr] == 0);
-	portWritten(fr, RAM[fr]);
 	next();
+	portWritten(fr, RAM[fr]);
 }
 
 // A wait loop is "djnz counter, self": decsz, an optional page instruction and a
@@ -874,7 +877,7 @@ void Cpu::sram()
 	if (((*rc >> 6)&1) == 0)
 	{ // chipenable=0
 		// 17 bit address: RA7 is the highest bit, then the 12 bit page, the lowest four bits are in RC
-		int address = ((*ra >> 7) & 1) << 16 | sramPage << 4 | *rc & 0xf;
+		int address = (((*ra >> 7) & 1) << 16) | (sramPage << 4) | (*rc & 0xf);
 
 		if (((RAM[7] >> 7)&1) == 0)
 		{ //write
