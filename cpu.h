@@ -30,8 +30,11 @@ using std::string;
 class Cpu
 {
 public:
-	/** @param video Receives the colour of port RE, or NULL if there is no screen. */
-	Cpu(VideoPort* video);
+	/**
+	 * @param ports What hangs on the pins of the ports RA..RE, or NULL if nothing does: the
+	 *              Cpu only calls it, it does not own it.
+	 */
+	Cpu(PortDevice* ports);
 	// The registers (rtcc, status, ...) point into the RAM of the object, a copy would point into the original.
 	Cpu(const Cpu&) = delete;
 	Cpu& operator=(const Cpu&) = delete;
@@ -46,11 +49,6 @@ public:
 	 */
 	unsigned char* getRAM();
 	/**
-	 * Returns a pointer to the external SRAM (128 KB). It is used in tests.
-	 * @return
-	 */
-	unsigned char* getSRAM();
-	/**
 	 * Returns a pointer to the program register. It is used in the debugger.
 	 * The program counter is not in RAM because it is a 12 bit register. Or 
 	 * at least used that way.
@@ -62,26 +60,17 @@ public:
 	 */
 	unsigned char* getMode();
 	/**
-	 *  This function executes the opcode. Everytime the function is called
-	               *  several commands are executed and the function returns, so that
-	               *  the GUI controls are not blocked.
+	 * Executes one instruction.
 	 */
 	void execute();
 
 	/**
-	 * Clears RAM, the SRAM and the port state and sets pc to 0xfff. The program in ROM is kept.
+	 * Clears RAM and the port state and sets pc to 0xfff. The program in ROM is kept. The
+	 * devices on the ports are not touched.
 	 */
 	void reset();
 
-	/**
-	 * The joystick input is handled in XGSEmu::handleEvents().
-	               * The values are written to that "register"
-	 * @return 
-	 */
-	unsigned short* getJoystrickr()
-	{
-		return &joystickr;
-	};
+
 	/**
 	 * Executes instructions until the given number of clock cycles has passed.
 	 * The last instruction may run over the requested number, the surplus is
@@ -111,24 +100,9 @@ public:
 	 * touched by reset().
 	 */
 	void setFusex(USHORT fusex);
-	/**
-	 * Connects the sound chip. Changes of port RA are forwarded to it.
-	 * @param sound The chip or NULL to disable the sound
-	 */
-	void setSound(SoundPort* sound);
 private:
-	/**
-	 *  The SRAM emulation.
-	 */
-	void sram();
-
-	/**
-	 * The joystick emulation
-	 */
-	void joystick();
 	unsigned char RAM[262];
 	USHORT ROM[4096];
-	unsigned char SRAM[131072];
 	unsigned char* indf; // indirection register (0)
 	unsigned char* rtcc; // timer
 	USHORT pc;
@@ -146,26 +120,18 @@ private:
 	unsigned char option; //8 bit
 	unsigned char Tris[5]; // data direction of the ports RA..RE: 1 is an input
 	unsigned char portConfig[3][5]; // pull-ups (MODE 0xE), input levels (0xD), Schmitt triggers (0xC)
-	unsigned char RInput[5];
 	// Unsigned, because the counter runs over after about 27 seconds at 80 MHz.
 	unsigned int cycle;
 	unsigned int cycle2;
 	unsigned int overshoot; // cycles the last runCycles() went beyond its target
 	int prescaler; // prescaler for the timer
 	bool fastLoops;
-	VideoPort* video;
-	SoundPort* sound;
-	unsigned char lastRa; // RA as the sound chip has seen it
-	unsigned short joystickr;
-	// state of the serial joystick interface and of the SRAM address logic
+	PortDevice* ports;
+	unsigned char lastPorts[5]; // RA..RE as the device has seen them
 	bool carryInput; // CF of the FUSEX word is 0: ADD and SUB take the carry flag as input
-	bool joystickClockHigh;
-	char joystickBit;
-	USHORT sramPage;
-	bool sramActive;
 	typedef void (Cpu::*Instruction)(USHORT mne);
 	static Instruction lookupInstruction(USHORT mne);
-	void updateSound();
+	void notifyPortChanges();
 	void updateTimer();
 	void registerWritten(USHORT fr);
 
@@ -181,7 +147,7 @@ private:
 	void skipWaitLoopRounds(USHORT fr);
 	void pushReturnAddress(USHORT address);
 	USHORT popReturnAddress();
-	void portWritten(USHORT fr, unsigned char value);
+	void portWritten(USHORT fr);
 	bool portBitWritten(USHORT fr, USHORT bit, bool set);
 
 	// the instructions

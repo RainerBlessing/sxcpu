@@ -22,7 +22,7 @@
 using namespace std;
 #include "cpu.h"
 
-Cpu::Cpu (VideoPort* video)
+Cpu::Cpu (PortDevice* ports)
 {
 	rtcc = &RAM[1];
 	status = &RAM[3];
@@ -34,22 +34,14 @@ Cpu::Cpu (VideoPort* video)
 	re = &RAM[9];
 	w = &RAM[261];
 	reset();
-	this->video = video;
-	sound = NULL;
+	this->ports = ports;
 	fastLoops = true;
-	joystickr = 0;
 	carryInput = false;
 }
 
 void Cpu::setFusex(USHORT fusex)
 {
 	carryInput = ((fusex >> 6) & 1) == 0;
-}
-
-void Cpu::setSound(SoundPort* sound)
-{
-	this->sound = sound;
-	lastRa = *ra;
 }
 
 void Cpu::reset()
@@ -60,18 +52,13 @@ void Cpu::reset()
 	memset (Tris, 0xff, sizeof(Tris));
 	memset (portConfig, 0xff, sizeof(portConfig));
 	memset (Stack, 0, sizeof(Stack));
-	sramPage = 0;
-	sramActive = false;
-	joystickClockHigh = false;
-	joystickBit = 0;
 	mode = 0x1f;
 	option = 0xff; // all bits 1: the prescaler belongs to the watchdog
-	memset (SRAM, 0, 131072*sizeof(unsigned char));
 	cycle = 0;
 	cycle2 = 0;
 	overshoot = 0;
 	prescaler = 0;
-	lastRa = 0;
+	memset (lastPorts, 0, sizeof(lastPorts));
 	sp = Stack;
 	pc = 0xfff;
 }
@@ -105,12 +92,6 @@ Cpu::getRAM ()
 	return RAM;
 }
 
-unsigned char *
-Cpu::getSRAM ()
-{
-	return SRAM;
-}
-
 USHORT *
 Cpu::getPC ()
 {
@@ -121,23 +102,29 @@ void Cpu::execute ()
 {
 	USHORT mne = ROM[pc];
 
-	updateSound();
+	notifyPortChanges();
 	updateTimer();
 	cycle2 = cycle;
 
 	(this->*lookupInstruction(mne))(mne);
 }
 
-// The sound chip hangs on port RA. Check once per instruction instead of in
-// every opcode that can write to the port.
-void Cpu::updateSound()
+// The devices on the ports want to know when a port register has another value. Check once
+// per instruction instead of in every opcode that can write to a port.
+void Cpu::notifyPortChanges()
 {
-	if (*ra != lastRa)
+	if (memcmp(RAM + 5, lastPorts, sizeof(lastPorts)) != 0)
 	{
-		lastRa = *ra;
-		if (sound != NULL)
+		for (int port = 0; port < 5; port++)
 		{
-			sound->portWrite(lastRa);
+			if (RAM[5 + port] != lastPorts[port])
+			{
+				lastPorts[port] = RAM[5 + port];
+				if (ports != NULL)
+				{
+					ports->portChanged(port, RAM + 5);
+				}
+			}
 		}
 	}
 }
@@ -250,31 +237,18 @@ USHORT Cpu::popReturnAddress()
 	return *sp;
 }
 
-// Writing to a port register has an effect outside of the CPU: RA is the
-// joystick and the sound chip, RE is the video.
-void Cpu::portWritten(USHORT fr, unsigned char value)
+// Writing to a port register has an effect outside of the CPU: the device on the pins sees it.
+void Cpu::portWritten(USHORT fr)
 {
-	switch (fr - 5)
+	if (ports != NULL && fr >= 5 && fr <= 9)
 	{
-		case 0:
-			joystick();
-			break;
-		case 2:
-			sram();
-			break;
-		case 4:
-			if (video != NULL)
-				video->changeVideo(cycle, value);
-			break;
-		default:
-			break;
+		ports->portWritten(fr - 5, RAM + 5, cycle);
 	}
 }
 
 // setb/clrb on a port register: the bit goes into the latch of the port. If the
-// pin is an output (its bit in the direction register is 0) the outside world
-// sees the change: RA is the joystick and the sound chip, RC the SRAM, RE the
-// video. Returns false if the register is not a port or the pin is an input.
+// pin is an output (its bit in the direction register is 0) the device on the pins
+// sees the change. Returns false if the register is not a port or the pin is an input.
 bool Cpu::portBitWritten(USHORT fr, USHORT bit, bool set)
 {
 	if (!(fr > 0x4 && fr < 0xa && (Tris[fr - 5] & (1 << bit)) == 0))
@@ -286,21 +260,7 @@ bool Cpu::portBitWritten(USHORT fr, USHORT bit, bool set)
 	else
 		RAM[fr] &= ~(1 << bit);
 	next();
-	switch (fr - 5)
-	{
-		case 0:
-			joystick();
-			break;
-		case 2:
-			sram();
-			break;
-		case 4:
-			if (video != NULL)
-				video->changeVideo(cycle, RAM[fr]);
-			break;
-		default:
-			break;
-	}
+	portWritten(fr);
 	return true;
 }
 
@@ -440,7 +400,7 @@ void Cpu::movFrW(USHORT mne)
 	RAM[fr] = *w;
 	registerWritten(fr);
 	next();
-	portWritten(fr, *w);
+	portWritten(fr);
 }
 
 void Cpu::clrFr(USHORT mne)
@@ -450,7 +410,7 @@ void Cpu::clrFr(USHORT mne)
 	registerWritten(fr);
 	setZero(true);
 	next();
-	portWritten(fr, 0);
+	portWritten(fr);
 }
 
 void Cpu::decFr(USHORT mne)
@@ -460,7 +420,7 @@ void Cpu::decFr(USHORT mne)
 	registerWritten(fr);
 	setZero(RAM[fr] == 0);
 	next();
-	portWritten(fr, RAM[fr]);
+	portWritten(fr);
 }
 
 void Cpu::incFr(USHORT mne)
@@ -470,7 +430,7 @@ void Cpu::incFr(USHORT mne)
 	registerWritten(fr);
 	setZero(RAM[fr] == 0);
 	next();
-	portWritten(fr, RAM[fr]);
+	portWritten(fr);
 }
 
 // A wait loop is "djnz counter, self": decsz, an optional page instruction and a
@@ -837,62 +797,5 @@ void Cpu::controlInstruction(USHORT mne)
 	}
 	// nop, clr !WDT and what is not implemented (reti, retiw, sleep) take a cycle
 	next(cycles);
-}
-
-void Cpu::joystick()
-{
-	bool shift = false;
-	if ((*ra&2) == 0)
-	{
-		joystickBit = 15;
-	}
-	if ((*ra&1) == 1)
-	{
-		joystickClockHigh = true;
-	}
-	if ((*ra&1) == 0 && joystickClockHigh == true)
-	{
-		shift = true;
-		joystickClockHigh = false;
-	}
-	if (shift == true && joystickBit > -1)
-	{
-		if (((joystickr >> joystickBit) &1) == 1)
-		{
-			*ra = (*ra & 0xf8) | (*ra & 0x3);
-		}
-		else
-			*ra = (*ra & 0xf8) | 4 | (*ra & 0x3);
-		joystickBit--;
-	}
-}
-void Cpu::sram()
-{
-	if (((*rc >> 4)&1) == 1)
-	{
-		sramPage <<= 1;
-		sramPage &= 0xfff; // 12 bit
-		sramPage |= (*rc >> 5) & 1;
-	}
-	if (((*rc >> 6)&1) == 0)
-	{ // chipenable=0
-		// 17 bit address: RA7 is the highest bit, then the 12 bit page, the lowest four bits are in RC
-		int address = (((*ra >> 7) & 1) << 16) | (sramPage << 4) | (*rc & 0xf);
-
-		if (((RAM[7] >> 7)&1) == 0)
-		{ //write
-			SRAM[address] = *rd;
-		}
-		else
-		{ //read
-			*rd = SRAM[address];
-		}
-		sramActive = true;
-	}
-	if (((RAM[7] >> 6)&1) == 1 && sramActive == true)
-	{ // chipenable=1
-		sramPage = 0;
-		sramActive = false;
-	}
 }
 

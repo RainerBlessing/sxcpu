@@ -2,15 +2,27 @@
 #include <vector>
 #include "cpu.h"
 
-// A video that remembers what the CPU wrote to port RE
-class MockVideo : public VideoPort {
+// A device on the ports that remembers what the CPU told it. The screen sits on port RE:
+// calls, lastCycle and lastValue are about RE.
+class MockPorts : public PortDevice {
 public:
-    void changeVideo(int cycle, unsigned char val) override {
-        lastCycle = cycle;
-        lastValue = val;
-        calls++;
+    void portWritten(int port, unsigned char* registers, unsigned int cycle) override {
+        writes[port]++;
+        if (port == 4) {
+            lastCycle = (int)cycle;
+            lastValue = registers[4];
+            calls++;
+        }
     }
-    
+
+    void portChanged(int port, unsigned char* registers) override {
+        changes[port]++;
+        lastChangedValue[port] = registers[port];
+    }
+
+    int writes[5] = {0, 0, 0, 0, 0};            // calls of portWritten per port
+    int changes[5] = {0, 0, 0, 0, 0};           // calls of portChanged per port
+    unsigned char lastChangedValue[5] = {0, 0, 0, 0, 0};
     int calls = 0;
     int lastCycle = 0;
     unsigned char lastValue = 0;
@@ -19,11 +31,11 @@ public:
 // Fixture für CPU-Tests
 class CpuTest : public ::testing::Test {
 protected:
-    MockVideo* videoMock;
+    MockPorts* videoMock;
     Cpu* cpu;
     
     void SetUp() override {
-        videoMock = new MockVideo();
+        videoMock = new MockPorts();
         cpu = new Cpu(videoMock);
     }
     
@@ -178,18 +190,6 @@ TEST_F(CpuTest, ExecuteIncFrInstruction) {
     
     // PC sollte inkrementiert worden sein
     EXPECT_EQ(*pc, 1);
-}
-
-// Teste Joystick-Funktionalität
-TEST_F(CpuTest, JoystickRegisterAccessible) {
-    // Hole Joystick-Register
-    unsigned short* joystickReg = cpu->getJoystrickr();
-    
-    // Setze einen Wert
-    *joystickReg = 0x1234;
-    
-    // Überprüfe, ob der Wert gesetzt wurde
-    EXPECT_EQ(*joystickReg, 0x1234);
 }
 
 // Teste, dass das Video-Objekt verwendet wird, wenn ein bestimmter RAM-Bereich geändert wird
@@ -500,74 +500,78 @@ TEST_F(CpuTest, CallAtTheLastWordReturnsToTheFirstWord) {
     EXPECT_EQ(0, *cpu->getPC());
 }
 
-// The external SRAM is addressed through port C and D: bit 4 of RC clocks one
-// bit (bit 5) into a 12 bit page register, bit 6 is the chip enable.
-class CpuSramTest : public CpuTest {
-protected:
-    void run(USHORT opcode) {
+// What the devices on the ports are told: every port, and every way of changing it.
+TEST_F(CpuTest, EveryPortWrittenByMovIsReportedToItsDevice) {
+    for (int port = 0; port < 5; port++) {
         *cpu->getPC() = 0x100;
-        setRomValue(0x100, opcode);
+        setRomValue(0x100, 0x020 | (5 + port));   // mov RA..RE,w
         cpu->execute();
+        EXPECT_EQ(1, videoMock->writes[port]) << "port " << port;
     }
-
-    void configureAllPortsAsOutputs() {
-        cpu->getRAM()[261] = 0;
-        run(0x05f);   // mode #0xf
-        run(0x007);   // mov !rc,w
-    }
-
-    void clockPageBit(int bit) {
-        unsigned char* rc = &cpu->getRAM()[7];
-        *rc = (*rc & ~0x20) | (bit << 5);
-        run(0x587);   // setb RC.4
-        run(0x487);   // clrb RC.4
-    }
-};
-
-// Characterisation: only the low 12 bits of the page take part in the address.
-// (Address bit 16, RA7, is lost because the address is a 16 bit variable.)
-TEST_F(CpuSramTest, OnlyTheLast12ClockedBitsFormThePage) {
-    configureAllPortsAsOutputs();
-    unsigned char* ram = cpu->getRAM();
-    ram[7] = 1 << 6;          // chip disabled
-    for (int i = 0; i < 20; i++) {
-        clockPageBit(1);      // more than 12 bits: the oldest ones fall out
-    }
-    ram[8] = 0x5a;            // RD, the data
-    ram[7] = (ram[7] & ~0x0f) | 0x03;
-    ram[7] &= ~(1 << 7);      // write
-    run(0x4c7);               // clrb RC.6: chip enable, writes the SRAM
-
-    EXPECT_EQ(0x5a, cpu->getSRAM()[(0xfff << 4) | 0x3]);
 }
 
-// RA7 is the highest address bit of the 128 KB SRAM.
-TEST_F(CpuSramTest, Ra7SelectsTheUpperHalfOfTheSram) {
-    configureAllPortsAsOutputs();
-    unsigned char* ram = cpu->getRAM();
-    ram[7] = 1 << 6;          // chip disabled
-    for (int i = 0; i < 12; i++) {
-        clockPageBit(1);
-    }
-    ram[5] |= 1 << 7;         // RA7
-    ram[8] = 0x5a;
-    ram[7] = (ram[7] & ~0x0f) | 0x03;
-    ram[7] &= ~(1 << 7);      // write
-    run(0x4c7);               // clrb RC.6: chip enable, writes the SRAM
-
-    EXPECT_EQ(0x5a, cpu->getSRAM()[0x10000 | (0xfff << 4) | 0x3]);
-    EXPECT_EQ(0x00, cpu->getSRAM()[(0xfff << 4) | 0x3]);
+TEST_F(CpuTest, SetbAndClrbOnAnOutputPinAreReportedToTheDevice) {
+    cpu->getRAM()[261] = 0;
+    *cpu->getPC() = 0x100;
+    setRomValue(0x100, 0x05f);    // mode #0xf
+    cpu->execute();
+    *cpu->getPC() = 0x100;
+    setRomValue(0x100, 0x007);    // mov !rc,w: all pins of RC are outputs
+    cpu->execute();
+    *cpu->getPC() = 0x100;
+    setRomValue(0x100, 0x587);    // setb RC.4
+    cpu->execute();
+    *cpu->getPC() = 0x100;
+    setRomValue(0x100, 0x487);    // clrb RC.4
+    cpu->execute();
+    EXPECT_EQ(2, videoMock->writes[2]);
 }
 
-// The SRAM sees every write to port C, not only setb and clrb.
-TEST_F(CpuSramTest, MovRcWithChipEnableLowWritesTheSram) {
-    configureAllPortsAsOutputs();
-    unsigned char* ram = cpu->getRAM();
-    ram[8] = 0x5a;            // RD, the data
-    ram[261] = 0x03;          // W: chip enable 0, write, low address bits 3
-    run(0x027);               // mov RC,w
+// Writing the value a port already has is a write, a clock pin sees a pulse.
+TEST_F(CpuTest, AWriteOfTheSameValueIsStillReported) {
+    cpu->getRAM()[261] = 0;       // RA is 0
+    *cpu->getPC() = 0x100;
+    setRomValue(0x100, 0x025);    // mov RA,w
+    cpu->execute();
+    EXPECT_EQ(1, videoMock->writes[0]);
+}
 
-    EXPECT_EQ(0x5a, cpu->getSRAM()[0x3]);
+// Not every instruction that changes a port is a "write" with side effects, but a device that
+// listens to the pins wants to know of all of them, before the next instruction.
+TEST_F(CpuTest, AChangeByAnyInstructionIsReportedBeforeTheNextOne) {
+    cpu->getRAM()[261] = 0x10;    // W
+    *cpu->getPC() = 0x100;
+    setRomValue(0x100, 0x1e5);    // add RA,w
+    setRomValue(0x101, 0x000);    // nop
+    cpu->execute();
+    EXPECT_EQ(0, videoMock->changes[0]);
+    cpu->execute();
+    EXPECT_EQ(1, videoMock->changes[0]);
+    EXPECT_EQ(0x10, videoMock->lastChangedValue[0]);
+    cpu->execute();
+    EXPECT_EQ(1, videoMock->changes[0]);   // told only once
+}
+
+TEST_F(CpuTest, AWriteOfTheSameValueIsNoChange) {
+    cpu->getRAM()[261] = 0;
+    *cpu->getPC() = 0x100;
+    setRomValue(0x100, 0x025);    // mov RA,w: RA is 0 already
+    setRomValue(0x101, 0x000);
+    cpu->execute();
+    cpu->execute();
+    EXPECT_EQ(0, videoMock->changes[0]);
+}
+
+TEST_F(CpuTest, ADeviceThatPutsALevelOnAPinIsToldAboutItBeforeTheNextInstruction) {
+    // the device writes into the register while the program runs
+    *cpu->getPC() = 0x100;
+    setRomValue(0x100, 0x000);
+    setRomValue(0x101, 0x000);
+    cpu->execute();
+    cpu->getRAM()[6] = 0x42;      // RB
+    cpu->execute();
+    EXPECT_EQ(1, videoMock->changes[1]);
+    EXPECT_EQ(0x42, videoMock->lastChangedValue[1]);
 }
 
 TEST_F(CpuTest, ResetPutsTheModeRegisterBackTo1F) {

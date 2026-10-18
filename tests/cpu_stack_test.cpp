@@ -2,10 +2,10 @@
 #include <vector>
 #include "cpu.h"
 
-// The stack does not care what happens on the screen.
-class NullVideo : public VideoPort {
+// The stack does not care what happens on the pins.
+class NullPorts : public PortDevice {
 public:
-    void changeVideo(int, unsigned char) override {}
+    void portWritten(int, unsigned char*, unsigned int) override {}
 };
 
 // The SX52 has a hardware stack of eight return addresses. A ninth nested
@@ -19,7 +19,7 @@ protected:
     };
     static const int STEP = 10;     // distance between the nested calls
 
-    NullVideo video;
+    NullPorts video;
 
     // The call at STEP * k jumps to STEP * (k + 1); the return address
     // STEP * k + 1 holds a "retw". The deepest level is a "retw" as well.

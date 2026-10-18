@@ -4,10 +4,10 @@ The core of the SX52 emulator that [xgsemu](https://github.com/RainerBlessing/xg
 and [sxemu](https://github.com/RainerBlessing/sxemu) share. It has no
 dependency on SDL, wxWidgets or curses.
 
-- `Cpu` (`cpu.h`): the SX52 with ROM, RAM, SRAM, ports, timer and the joystick
-  interface of the XGS.
-- `VideoPort` and `SoundPort` (`cpu_ports.h`): what the CPU needs from the
-  front end. Pass `NULL` as video for a front end without screen.
+- `Cpu` (`cpu.h`): the SX52 with ROM, RAM, ports and timer.
+- `PortDevice` (`cpu_ports.h`): what hangs on the pins of the ports RA..RE (a screen, a
+  sound chip, a joystick, a RAM). The CPU calls it when a port is written or has another
+  value, a front end implements it. Pass `NULL` for a CPU without any device.
 - `disassemble()` (`disasm.h`): opcode to text for a debugger.
 - `assemble()` (`asm.h`): one line of assembler to an opcode, the reverse of `disassemble()`.
 - `assembleSource()` (`asm.h`): a whole source text with labels, `org`, `equ` and `dw` into a ROM image.
