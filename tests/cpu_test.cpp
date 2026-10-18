@@ -241,6 +241,7 @@ TEST_F(CpuTest, JumpPcPlusWJumpsBehindTheNextInstruction) {
     unsigned char* ram = cpu->getRAM();
     *pc = 0xa00;
     ram[261] = 0x03;
+    ram[3] = 0xa0;           // page 5: the jump stays in the page of the code
     setRomValue(0xa00, 0x1e2);
 
     cpu->execute();
@@ -1066,7 +1067,7 @@ TEST_F(CpuCarryInputTest, TheJumpWithAddToTheProgramCounterIgnoresTheCarry) {
     unsigned char* ram = cpu->getRAM();
     *pc = 0xa00;
     ram[261] = 0x03;
-    ram[3] |= C;
+    ram[3] = 0xa0 | C;      // page 5, carry set
     setRomValue(0xa00, 0x1e2);
     cpu->execute();
     EXPECT_EQ(0xa04, *pc);
@@ -1287,4 +1288,109 @@ TEST_F(CpuTimerTest, EveryPrescalerSettingCountsTheCyclesDividedByItsRatio) {
             EXPECT_EQ((1000 / ratio) & 0xff, rtcc());
         }
     }
+}
+
+// The PC register (02h) is the lower eight bits of the program counter (SX User's Manual 2.4.4,
+// 2.6.3). A read gives the address of the next instruction, a write is a jump: bit 8 is 0 and the
+// bits 11:9 are the page bits of STATUS, as with jmp and call. It takes three cycles.
+class CpuPcRegisterTest : public CpuTest {
+protected:
+    static const int PC_REGISTER = 2;
+
+    // runs one instruction at "address" with the page bits "page" in STATUS
+    void runAt(USHORT address, USHORT opcode, int page) {
+        *cpu->getPC() = address;
+        setRomValue(address, opcode);
+        cpu->getRAM()[3] = page << 5;
+        cpu->execute();
+    }
+};
+
+TEST_F(CpuPcRegisterTest, ReadingItGivesTheLowByteOfTheNextAddress) {
+    cpu->getRAM()[261] = 0;
+    runAt(0x1ab, 0x200 | PC_REGISTER, 0);          // mov w,PC
+    EXPECT_EQ(0xac, cpu->getRAM()[261]);
+    EXPECT_EQ(0x1ac, *cpu->getPC());
+}
+
+TEST_F(CpuPcRegisterTest, MovPcWJumpsToWInThePageOfStatus) {
+    cpu->getRAM()[261] = 0x34;
+    runAt(0x010, 0x020 | PC_REGISTER, 2);          // mov PC,w (jmp w)
+    EXPECT_EQ(0x434, *cpu->getPC());
+}
+
+TEST_F(CpuPcRegisterTest, AJumpWithTheBitsOfAnotherPageThanTheCodeGoesToThePageOfStatus) {
+    cpu->getRAM()[261] = 0x07;
+    runAt(0x000, 0x020 | PC_REGISTER, 1);          // a table at $200: "page table" then "jmp w"
+    EXPECT_EQ(0x207, *cpu->getPC());
+}
+
+TEST_F(CpuPcRegisterTest, BitEightOfTheTargetIsAlwaysZero) {
+    cpu->getRAM()[261] = 0x10;
+    runAt(0x1f0, 0x020 | PC_REGISTER, 0);          // the code is in the second half of the page
+    EXPECT_EQ(0x010, *cpu->getPC());
+}
+
+TEST_F(CpuPcRegisterTest, AJumpThroughThePcRegisterTakesThreeCycles) {
+    cpu->getRAM()[261] = 0;
+    int before = cpu->getCycle();
+    runAt(0x100, 0x020 | PC_REGISTER, 0);
+    EXPECT_EQ(3, cpu->getCycle() - before);
+}
+
+TEST_F(CpuPcRegisterTest, JmpPcPlusWAddsToTheAddressOfTheNextInstruction) {
+    cpu->getRAM()[261] = 4;
+    runAt(0x010, 0x1e0 | PC_REGISTER, 0);          // add PC,w: "jump forward 5 instructions"
+    EXPECT_EQ(0x015, *cpu->getPC());
+}
+
+// "internally, the addition pc+w is limited to eight bits, and so the overflow is lost" (the SX
+// book, 1.16): the jump stays in the page and the carry flag tells.
+TEST_F(CpuPcRegisterTest, JmpPcPlusWLosesTheOverflowOfTheLowByte) {
+    cpu->getRAM()[261] = 0x20;
+    runAt(0x0f0, 0x1e0 | PC_REGISTER, 0);          // 0xf1 + 0x20 = 0x111
+    EXPECT_EQ(0x011, *cpu->getPC());
+    EXPECT_EQ(1, cpu->getRAM()[3] & 1);            // carry
+}
+
+TEST_F(CpuPcRegisterTest, JmpPcPlusWSetsTheZeroFlagWhenTheTargetIsTheStartOfThePage) {
+    cpu->getRAM()[261] = 1;
+    runAt(0x0fe, 0x1e0 | PC_REGISTER, 1);          // 0xff + 1 = 0x100: low byte 0
+    EXPECT_EQ(0x200, *cpu->getPC());
+    EXPECT_EQ(4, cpu->getRAM()[3] & 4);            // zero
+}
+
+TEST_F(CpuPcRegisterTest, OtherInstructionsThatWriteThePcRegisterJumpAsWell) {
+    cpu->getRAM()[261] = 0x0f;
+    runAt(0x040, 0x060 | PC_REGISTER, 1);          // clr PC
+    EXPECT_EQ(0x200, *cpu->getPC());
+    cpu->getRAM()[261] = 0x0f;
+    runAt(0x040, 0x120 | PC_REGISTER, 0);          // or PC,w: 0x41 | 0x0f
+    EXPECT_EQ(0x04f, *cpu->getPC());
+}
+
+TEST_F(CpuPcRegisterTest, TheJumpWorksThroughTheIndirectRegisterToo) {
+    cpu->getRAM()[4] = PC_REGISTER;                // FSR points to the PC register
+    cpu->getRAM()[261] = 0x77;
+    runAt(0x010, 0x020 | 0, 0);                    // mov indf,w
+    EXPECT_EQ(0x077, *cpu->getPC());
+}
+
+// Kj Sprites tests the parity of the address with "snb pc.0" and "sb pc.0" in a row of
+// instructions at alternating addresses, to skip the "retp" after them every time (a one word
+// "nop" for the skip). It only works if a read of the PC register gives the address of the
+// instruction behind the one that reads it.
+TEST_F(CpuPcRegisterTest, SnbOnBitZeroOfThePcRegisterSkipsAtAnOddAddress) {
+    runAt(0x223, 0x602, 0);                        // snb PC.0: the next address 0x224 is even
+    EXPECT_EQ(0x225, *cpu->getPC());
+}
+
+TEST_F(CpuPcRegisterTest, SbOnBitZeroOfThePcRegisterSkipsAtAnEvenAddress) {
+    runAt(0x228, 0x702, 0);                        // sb PC.0: the next address 0x229 is odd
+    EXPECT_EQ(0x22a, *cpu->getPC());
+}
+
+TEST_F(CpuPcRegisterTest, SnbOnBitZeroOfThePcRegisterDoesNotSkipAtAnEvenAddress) {
+    runAt(0x224, 0x602, 0);                        // the next address 0x225 is odd
+    EXPECT_EQ(0x225, *cpu->getPC());
 }

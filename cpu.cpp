@@ -60,6 +60,7 @@ void Cpu::reset()
 	prescaler = 0;
 	memset (lastPorts, 0, sizeof(lastPorts));
 	sp = Stack;
+	pcWritten = false;
 	pc = 0xfff;
 }
 
@@ -153,6 +154,11 @@ void Cpu::registerWritten(USHORT fr)
 	{
 		prescaler = 0;
 	}
+	if (fr == 2)
+	{
+		// the PC register: the instruction ends with a jump, see next()
+		pcWritten = true;
+	}
 }
 
 Cpu::Instruction Cpu::lookupInstruction(USHORT mne)
@@ -170,13 +176,18 @@ Cpu::Instruction Cpu::lookupInstruction(USHORT mne)
 
 // The register of an instruction: 0 is the indirect register (INDF, addressed
 // by FSR), 0x10 and above are in the bank selected by FSR.
-USHORT Cpu::registerAddress(USHORT mne) const
+USHORT Cpu::registerAddress(USHORT mne)
 {
 	USHORT fr = mne & 0x1f;
 	if (fr == 0)
-		return *fsr;
-	if (fr > 0xf)
-		return (*fsr & 0xf0) | (fr & 0xf);
+		fr = *fsr;
+	else if (fr > 0xf)
+		fr = (*fsr & 0xf0) | (fr & 0xf);
+	if (fr == 2)
+	{
+		// the PC register holds the lower eight bits of the address of the next instruction
+		RAM[2] = (pc + 1) & 0xff;
+	}
 	return fr;
 }
 
@@ -204,9 +215,19 @@ void Cpu::setDigitCarry(bool digitCarry)
 		*status &= ~(1 << 1);
 }
 
-// Ends an instruction that continues with the next one.
+// Ends an instruction that continues with the next one. If the instruction wrote the PC
+// register (mov, add, clr... on register 2) it is a jump instead: the new low byte is in
+// the register, bit 8 is 0 and the bits 11:9 are the page bits of STATUS, like jmp and call
+// (the SX book, chapter 1.16, "jmp w" after "page"). It takes three cycles.
 void Cpu::next(int cycles)
 {
+	if (pcWritten)
+	{
+		pcWritten = false;
+		pc = ((*status & 0xe0) << 4) | RAM[2];
+		cycle += cycles + 2;
+		return;
+	}
 	cycle += cycles;
 	pc = (pc + 1) & 0xfff; // the program counter has 12 bits and wraps around
 }
@@ -600,28 +621,19 @@ void Cpu::testFr(USHORT mne)
 void Cpu::addFrW(USHORT mne)
 {
 	USHORT fr = registerAddress(mne);
+	// jmp PC+W is add PC,W: the carry is no input of the jump
+	int carry = fr != 2 ? carryIn() : 0;
 	// the digit carry is the carry from bit 3
-	setDigitCarry(((RAM[fr] & 0xf) + (*w & 0xf) + (fr != 2 ? carryIn() : 0)) > 0xf);
-	USHORT sum;
-	if (fr != 2)
-		sum = RAM[fr] + *w + carryIn();
-	else
-		sum = pc + *w; // the jump ignores the carry
+	setDigitCarry(((RAM[fr] & 0xf) + (*w & 0xf) + carry) > 0xf);
+	USHORT sum = RAM[fr] + *w + carry;
 	// jmp PC+W: only the low byte of the program counter takes part in the
 	// addition, so the carry is normally cleared.
-	setCarry((fr != 2 ? sum : ((pc + 1) & 0xff) + *w) > 0xff);
-
-	if (fr != 2)
-	{
-		RAM[fr] = sum & 0xff;
-		registerWritten(fr);
-	}
-	else
-		pc = sum;
-
+	setCarry(sum > 0xff);
+	RAM[fr] = sum & 0xff;
+	registerWritten(fr);
 	// the zero flag follows the 8 bit result, not the sum with its carry
-	setZero((fr != 2 ? (sum & 0xff) : sum) == 0);
-	next((fr == 2) ? 3 : 1);	// jmp PC+W takes 3 cycles
+	setZero((sum & 0xff) == 0);
+	next();
 }
 
 void Cpu::addWFr(USHORT mne)

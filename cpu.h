@@ -126,6 +126,7 @@ private:
 	unsigned int overshoot; // cycles the last runCycles() went beyond its target
 	int prescaler; // prescaler for the timer
 	bool fastLoops;
+	bool pcWritten; // an instruction wrote the PC register: it is a jump, see next()
 	PortDevice* ports;
 	unsigned char lastPorts[5]; // RA..RE as the device has seen them
 	bool carryInput; // CF of the FUSEX word is 0: ADD and SUB take the carry flag as input
@@ -136,7 +137,7 @@ private:
 	void registerWritten(USHORT fr);
 
 	// operands, flags and the like
-	USHORT registerAddress(USHORT mne) const;
+	USHORT registerAddress(USHORT mne);
 	void setZero(bool zero);
 	void setCarry(bool carry);
 	void setDigitCarry(bool digitCarry);
