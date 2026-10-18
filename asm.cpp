@@ -206,6 +206,11 @@ namespace
 			Symbols::const_iterator symbol = symbols.find(word);
 			if (port || isReservedWord(lowerCase(word)) || isdigit((unsigned char) word[0]))
 				out += word;
+			else if (symbol != symbols.end() && symbol->second.label && symbol->second.value > 0xfff)
+			{
+				*problem = "label " + word + " is beyond the end of the ROM";
+				return false;
+			}
 			else if (symbol != symbols.end() && symbol->second.label && lower == "call" && (symbol->second.value & 0x100))
 			{
 				*problem = "call target " + word + " is in the second half of a page";
@@ -244,6 +249,12 @@ namespace
 				return false;
 			}
 			values->push_back(value);
+		}
+		string trimmed = trim(text);
+		if (!trimmed.empty() && trimmed[trimmed.size() - 1] == ',')
+		{
+			*problem = "dw ends with a comma";
+			return false;
 		}
 		if (values->empty())
 		{
@@ -393,7 +404,9 @@ namespace
 			// code that runs on into the next page has to set the page there
 			item.boundaryPage = item.kind == CODE && item.autopage && sequential && address % PAGE_WORDS == 0;
 			item.address = address;
-			if (!item.label.empty() && !define(item.label, address, true, symbols, &problem))
+			// org, firsthalf and samepage move the address: their label stands where the code goes on
+			bool movesAddress = item.kind == ORG || item.kind == FIRSTHALF || item.kind == SAMEPAGE;
+			if (!movesAddress && !item.label.empty() && !define(item.label, address, true, symbols, &problem))
 			{
 				*error = lineError(item.number, problem);
 				return false;
@@ -464,6 +477,15 @@ namespace
 				break;
 			default:
 				break;
+			}
+			if (movesAddress)
+			{
+				item.address = address;
+				if (!item.label.empty() && !define(item.label, address, true, symbols, &problem))
+				{
+					*error = lineError(item.number, problem);
+					return false;
+				}
 			}
 		}
 		return true;
