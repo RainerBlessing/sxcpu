@@ -21,6 +21,9 @@ bool assemble(const std::string& line, unsigned short* opcode);
  *   dw v, ...  raw 12 bit words
  *   firsthalf  continue at the start of the next page if the address is in the
  *              second half of a page; a call reaches only the first half
+ *   samepage n continue at the start of the next page if the next n (hexadecimal)
+ *              words would not fit on the rest of this page; for a routine that
+ *              has to stay on one page
  *   autopage on|off  put "page n" in front of every jmp and call to a label on
  *              another page (off at the start). Code at an address is taken
  *              to run with the page of that address, so a callee on another

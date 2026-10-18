@@ -289,7 +289,7 @@ namespace
 	const int PAGE_WORDS = 512;
 	const int PAGE_HALF = 256;
 
-	enum Kind { NOTHING, ORG, FIRSTHALF, EQU, DW, CODE, AUTOPAGE };
+	enum Kind { NOTHING, ORG, FIRSTHALF, SAMEPAGE, EQU, DW, CODE, AUTOPAGE };
 
 	struct Item
 	{
@@ -342,6 +342,11 @@ namespace
 			}
 			else if (keyword == "firsthalf")
 				item.kind = FIRSTHALF;
+			else if (keyword == "samepage")
+			{
+				item.kind = SAMEPAGE;
+				item.text = rest;
+			}
 			else if (keyword == "autopage")
 			{
 				string mode = lowerCase(rest);
@@ -417,6 +422,26 @@ namespace
 					sequential = false;
 				}
 				break;
+			case SAMEPAGE:
+			{
+				int size;
+				if (!parseValue(item.text, *symbols, &size) || size < 1 || size > PAGE_WORDS)
+				{
+					*error = lineError(item.number, "samepage needs a number of words from 1 to 200");
+					return false;
+				}
+				if ((address % PAGE_WORDS) + size > PAGE_WORDS)
+				{
+					address = (address | (PAGE_WORDS - 1)) + 1;
+					if (address >= romSize)
+					{
+						*error = lineError(item.number, "samepage moves beyond the end of the ROM");
+						return false;
+					}
+					sequential = false;
+				}
+				break;
+			}
 			case EQU:
 				if (!parseValue(item.text, *symbols, &value) || value > 0xfff)
 				{
