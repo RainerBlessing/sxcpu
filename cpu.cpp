@@ -313,12 +313,7 @@ void Cpu::movWLiteral(USHORT mne)
 
 void Cpu::andWLiteral(USHORT mne)
 {
-	USHORT literal = mne & 0xff;
-	if (literal == 0)
-	{
-		literal = *fsr;
-	}
-	*w = *w & literal;
+	*w = *w & (mne & 0xff);
 	setZero(*w == 0);
 	next();
 }

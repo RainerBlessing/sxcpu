@@ -1394,3 +1394,28 @@ TEST_F(CpuPcRegisterTest, SnbOnBitZeroOfThePcRegisterDoesNotSkipAtAnEvenAddress)
     runAt(0x224, 0x602, 0);                        // the next address 0x225 is odd
     EXPECT_EQ(0x225, *cpu->getPC());
 }
+
+// "and w,#0" is an ordinary AND with the literal 0: W is cleared and the zero flag is set, also
+// when FSR is not 0. (The first version of the CPU took the literal 0 for the indirect register.)
+TEST_F(CpuTest, AndWithTheLiteralZeroClearsW) {
+    unsigned char* ram = cpu->getRAM();
+    ram[261] = 0xff;           // W
+    ram[4] = 0x35;             // FSR
+    ram[3] = 0;
+    *cpu->getPC() = 0x100;
+    setRomValue(0x100, 0xe00);   // and w,#0
+    cpu->execute();
+    EXPECT_EQ(0, ram[261]);
+    EXPECT_EQ(4, ram[3] & 4);    // zero
+}
+
+TEST_F(CpuTest, AndWithALiteralMasksW) {
+    unsigned char* ram = cpu->getRAM();
+    ram[261] = 0xaa;
+    ram[4] = 0x35;
+    *cpu->getPC() = 0x100;
+    setRomValue(0x100, 0xe0f);   // and w,#0x0f
+    cpu->execute();
+    EXPECT_EQ(0x0a, ram[261]);
+    EXPECT_EQ(0, ram[3] & 4);
+}
