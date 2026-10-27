@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <map>
+#include <set>
 #include <sstream>
 #include <vector>
 
@@ -151,16 +152,260 @@ namespace
 		return true;
 	}
 
-	// a name of the symbol table or a hexadecimal number
-	bool parseValue(const string& text, const Symbols& symbols, int* value)
+	bool isNameChar(char c)
 	{
-		Symbols::const_iterator symbol = symbols.find(text);
-		if (symbol != symbols.end())
+		return isalnum((unsigned char) c) || c == '_';
+	}
+
+	struct Value
+	{
+		long long number;
+		bool label;		// a label or $ is part of the value: jmp and call keep only its low bits
+	};
+
+	const long long EXPRESSION_LIMIT = 0xffffff;
+	const int EXPRESSION_DEPTH = 64;
+
+	// A value of the assembler: numbers (hexadecimal as 1f or 0x1f, decimal d'31', binary
+	// b'11111'), names, $ (the address of the line), ( ), the unary operators - + ~ and
+	// the binary operators * / + - << >> & ^ | with the precedence of C.
+	class Expression
+	{
+	public:
+		Expression(const string& text, const Symbols& symbols, int here) :
+			text(text), symbols(symbols), here(here), position(0), depth(0), problem(NULL) {}
+
+		bool evaluate(Value* result, string* problemText)
 		{
-			*value = symbol->second.value;
+			problem = problemText;
+			Value value = { 0, false };
+			if (!binary(0, &value))
+				return false;
+			skipBlanks();
+			if (position < text.size())
+				return fail(string("unexpected '") + text[position] + "'");
+			*result = value;
 			return true;
 		}
-		return parseHex(text, value);
+
+	private:
+		string text;
+		const Symbols& symbols;
+		int here;
+		size_t position;
+		int depth;
+		string* problem;
+
+		bool fail(const string& message)
+		{
+			*problem = message;
+			return false;
+		}
+
+		void skipBlanks()
+		{
+			while (position < text.size() && (text[position] == ' ' || text[position] == '\t'))
+				position++;
+		}
+
+		// the operator of a precedence level (0 is the weakest) at the position, or ""
+		string operatorAt(int level) const
+		{
+			if (position >= text.size())
+				return "";
+			char c = text[position];
+			char next = position + 1 < text.size() ? text[position + 1] : 0;
+			switch (level)
+			{
+			case 0:
+				return c == '|' ? "|" : "";
+			case 1:
+				return c == '^' ? "^" : "";
+			case 2:
+				return c == '&' ? "&" : "";
+			case 3:
+				return c == '<' && next == '<' ? "<<" : c == '>' && next == '>' ? ">>" : "";
+			case 4:
+				return c == '+' ? "+" : c == '-' ? "-" : "";
+			default:
+				return c == '*' ? "*" : c == '/' ? "/" : "";
+			}
+		}
+
+		bool binary(int level, Value* result)
+		{
+			if (level > 5)
+				return unary(result);
+			if (!binary(level + 1, result))
+				return false;
+			for (;;)
+			{
+				skipBlanks();
+				string op = operatorAt(level);
+				if (op.empty())
+					return true;
+				position += op.size();
+				Value right;
+				if (!binary(level + 1, &right) || !apply(op, right, result))
+					return false;
+			}
+		}
+
+		bool apply(const string& op, const Value& right, Value* left)
+		{
+			long long a = left->number;
+			long long b = right.number;
+			long long r = 0;
+			if (op == "|")
+				r = a | b;
+			else if (op == "^")
+				r = a ^ b;
+			else if (op == "&")
+				r = a & b;
+			else if (op == "+")
+				r = a + b;
+			else if (op == "-")
+				r = a - b;
+			else if (op == "*")
+				r = a * b;
+			else if (op == "/" || op == "<<" || op == ">>")
+			{
+				if (op == "/" && b == 0)
+					return fail("division by zero");
+				if (op != "/" && (b < 0 || b > 24))
+					return fail("the shift count must be from 0 to 24");
+				r = op == "/" ? a / b : op == "<<" ? a * (1LL << b) : a >> b;
+			}
+			if (r > EXPRESSION_LIMIT || r < -EXPRESSION_LIMIT)
+				return fail("the value is out of range");
+			left->number = r;
+			left->label = left->label || right.label;
+			return true;
+		}
+
+		bool unary(Value* result)
+		{
+			if (depth >= EXPRESSION_DEPTH)
+				return fail("the expression is nested too deeply");
+			depth++;
+			bool ok = unaryOperator(result);
+			depth--;
+			return ok;
+		}
+
+		bool unaryOperator(Value* result)
+		{
+			skipBlanks();
+			if (position < text.size() && (text[position] == '-' || text[position] == '+' || text[position] == '~'))
+			{
+				char op = text[position++];
+				if (!unary(result))
+					return false;
+				if (op == '-')
+					result->number = -result->number;
+				else if (op == '~')
+					result->number = ~result->number;
+				return true;
+			}
+			return primary(result);
+		}
+
+		bool primary(Value* result)
+		{
+			skipBlanks();
+			if (position >= text.size())
+				return fail("a value is missing");
+			char c = text[position];
+			result->label = false;
+			if (c == '(')
+			{
+				position++;
+				if (!binary(0, result))
+					return false;
+				skipBlanks();
+				if (position >= text.size() || text[position] != ')')
+					return fail("missing )");
+				position++;
+				return true;
+			}
+			if (c == '$')
+			{
+				position++;
+				result->number = here;
+				result->label = true;
+				return true;
+			}
+			if (!isNameChar(c))
+				return fail(string("unexpected '") + c + "'");
+			size_t end = position;
+			while (end < text.size() && isNameChar(text[end]))
+				end++;
+			string word = text.substr(position, end - position);
+			position = end;
+			char kind = word.size() == 1 ? (char) tolower((unsigned char) word[0]) : 0;
+			if ((kind == 'd' || kind == 'b') && position < text.size() && text[position] == '\'')
+				return quoted(kind == 'd' ? 10 : 2, result);
+			return name(word, result);
+		}
+
+		// d'123' and b'101': the position is at the opening quote
+		bool quoted(int base, Value* result)
+		{
+			size_t close = text.find('\'', position + 1);
+			if (close == string::npos)
+				return fail("missing ' in a number");
+			string digits = text.substr(position + 1, close - position - 1);
+			position = close + 1;
+			if (digits.empty() || digits.size() > (base == 10 ? 7u : 24u))
+				return fail("bad number '" + digits + "'");
+			long long number = 0;
+			for (size_t i = 0; i < digits.size(); i++)
+			{
+				int digit = digits[i] - '0';
+				if (digit < 0 || digit >= base)
+					return fail("bad digit '" + string(1, digits[i]) + "' in a " + (base == 10 ? "decimal" : "binary") + " number");
+				number = number * base + digit;
+			}
+			result->number = number;
+			result->label = false;
+			return true;
+		}
+
+		// a symbol, or a name that is a hexadecimal number; a symbol wins
+		bool name(const string& word, Value* result)
+		{
+			if (isReservedWord(lowerCase(word)))
+				return fail(word + " cannot be used in an expression");
+			Symbols::const_iterator symbol = symbols.find(word);
+			if (symbol != symbols.end())
+			{
+				if (symbol->second.label && symbol->second.value > 0xfff)
+					return fail("label " + word + " is beyond the end of the ROM");
+				result->number = symbol->second.value;
+				result->label = symbol->second.label;
+				return true;
+			}
+			int number;
+			if (!parseHex(word, &number))
+				return fail(isdigit((unsigned char) word[0]) ? "bad number " + word : "unknown name " + word);
+			result->number = number;
+			return true;
+		}
+	};
+
+	// the value of a text that must not be negative, for org, equ, dw ...; `here` is $
+	bool evaluateNumber(const string& text, const Symbols& symbols, int here, int* number, string* problem)
+	{
+		Value value;
+		if (!Expression(text, symbols, here).evaluate(&value, problem))
+			return false;
+		if (value.number < 0)
+		{
+			*problem = "the value is negative";
+			return false;
+		}
+		*number = (int) value.number;
+		return true;
 	}
 
 	string hexText(int value)
@@ -177,75 +422,139 @@ namespace
 		return out.str();
 	}
 
-	// "jmp loop" -> "jmp 20", "mov counter, w" -> "mov 10, w": the names of
-	// the operands become numbers. Names that are no symbols must be hex numbers.
-	bool substituteNames(const string& text, const Symbols& symbols, string* resolved, string* problem)
+	// " (text)", or nothing for an empty text
+	string parenthesized(const string& text)
+	{
+		return text.empty() ? "" : " (" + text + ")";
+	}
+
+	// The value of an operand (or of the bit number of "clrb a.3") as a hexadecimal number. A
+	// label or $ makes the value the address of code: jmp keeps the low 9 bits, call the low 8.
+	bool resolveValue(const string& mnemonic, const string& text, bool immediate, const Symbols& symbols, int here,
+		string* out, string* problem)
+	{
+		Value value;
+		if (!Expression(text, symbols, here).evaluate(&value, problem))
+			return false;
+		long long number = value.number;
+		if (value.label && mnemonic == "call" && (number & 0x100))
+		{
+			*problem = "call target " + text + " is in the second half of a page";
+			return false;
+		}
+		if (value.label)
+			number &= mnemonic == "jmp" ? 0x1ff : mnemonic == "call" ? 0xff : 0xfff;
+		else if (number < 0 && immediate)
+			number &= 0xff;
+		if (number < 0)
+		{
+			*problem = "the value of " + text + " is negative";
+			return false;
+		}
+		*out = hexText((int) number);
+		return true;
+	}
+
+	// One operand of an instruction. What belongs to the syntax of the instruction stays as it
+	// is (the prefixes # / ++ -- << >>, the suffix -w, the !port, the registers w and m); the
+	// rest is an expression and becomes a number.
+	bool resolveOperand(const string& mnemonic, bool bitInstruction, const string& operand, const Symbols& symbols,
+		int here, string* out, string* problem)
+	{
+		string core = trim(operand);
+		if (!core.empty() && core[0] == '!')
+		{
+			*out = core;
+			return true;
+		}
+
+		static const char* const prefixes[] = { "++", "--", "<<", ">>", "#", "/" };
+		string prefix;
+		for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]) && prefix.empty(); i++)
+		{
+			string candidate = prefixes[i];
+			if (core.compare(0, candidate.size(), candidate) == 0)
+			{
+				prefix = candidate;
+				core = trim(core.substr(candidate.size()));
+			}
+		}
+		string suffix;
+		size_t last = core.find_last_not_of(" \t");
+		if (last != string::npos && last > 0 && tolower((unsigned char) core[last]) == 'w')
+		{
+			size_t dash = core.find_last_not_of(" \t", last - 1);
+			if (dash != string::npos && core[dash] == '-')
+			{
+				suffix = "-w";
+				core = trim(core.substr(0, dash));
+			}
+		}
+		if (core.empty() || isReservedWord(lowerCase(core)))
+		{
+			*out = prefix + core + suffix;
+			return true;
+		}
+
+		string first = core;
+		string bit;
+		size_t dot = core.rfind('.');
+		if (bitInstruction && dot != string::npos)
+		{
+			first = trim(core.substr(0, dot));
+			bit = trim(core.substr(dot + 1));
+		}
+		string value;
+		if (!resolveValue(mnemonic, first, prefix == "#", symbols, here, &value, problem))
+			return false;
+		if (first != core)
+		{
+			string number;
+			if (!resolveValue("", bit, false, symbols, here, &number, problem))
+				return false;
+			value += "." + number;
+		}
+		*out = prefix + value + suffix;
+		return true;
+	}
+
+	// "jmp loop+1" -> "jmp 21", "mov counter, w" -> "mov 10, w": the values in the operands
+	// become numbers. `here` is the address of the instruction ($).
+	bool substituteNames(const string& text, const Symbols& symbols, int here, string* resolved, string* problem)
 	{
 		string operands;
-		string mnemonic = splitWord(trim(text), &operands);
-		int mask = 0xfff;
-		string lower = lowerCase(mnemonic);
-		if (lower == "jmp")
-			mask = 0x1ff;
-		else if (lower == "call")
-			mask = 0xff;
-
+		string lower = lowerCase(splitWord(trim(text), &operands));
+		bool bits = lower == "clrb" || lower == "setb" || lower == "sb" || lower == "snb";
 		string out;
-		for (size_t i = 0; i < operands.size();)
+		for (size_t from = 0; !operands.empty();)
 		{
-			if (!isalnum((unsigned char) operands[i]) && operands[i] != '_')
-			{
-				out += operands[i++];
-				continue;
-			}
-			size_t end = i;
-			while (end < operands.size() && (isalnum((unsigned char) operands[end]) || operands[end] == '_'))
-				end++;
-			string word = operands.substr(i, end - i);
-			bool port = i > 0 && operands[i - 1] == '!';
-			Symbols::const_iterator symbol = symbols.find(word);
-			if (port || isReservedWord(lowerCase(word)) || isdigit((unsigned char) word[0]))
-				out += word;
-			else if (symbol != symbols.end() && symbol->second.label && symbol->second.value > 0xfff)
-			{
-				*problem = "label " + word + " is beyond the end of the ROM";
+			size_t comma = operands.find(',', from);
+			string operand;
+			if (!resolveOperand(lower, bits, operands.substr(from, comma == string::npos ? string::npos : comma - from),
+				symbols, here, &operand, problem))
 				return false;
-			}
-			else if (symbol != symbols.end() && symbol->second.label && lower == "call" && (symbol->second.value & 0x100))
-			{
-				*problem = "call target " + word + " is in the second half of a page";
-				return false;
-			}
-			else if (symbol != symbols.end())
-				out += hexText(symbol->second.label ? symbol->second.value & mask : symbol->second.value);
-			else
-			{
-				int number;
-				if (!parseHex(word, &number))
-				{
-					*problem = "unknown name " + word;
-					return false;
-				}
-				out += word;
-			}
-			i = end;
+			out += (out.empty() ? "" : ",") + operand;
+			if (comma == string::npos)
+				break;
+			from = comma + 1;
 		}
 		*resolved = lower + (out.empty() ? "" : " " + out);
 		return true;
 	}
 
-	// the values of a dw line, one ROM word each
-	bool dataValues(const string& text, const Symbols& symbols, vector<int>* values, string* problem)
+	// the values of a dw line, one ROM word each; `here` is the address of the first
+	bool dataValues(const string& text, const Symbols& symbols, int here, vector<int>* values, string* problem)
 	{
 		istringstream in(text);
 		string item;
 		while (getline(in, item, ','))
 		{
 			int value;
+			string detail;
 			item = trim(item);
-			if (!parseValue(item, symbols, &value) || value > 0xfff)
+			if (!evaluateNumber(item, symbols, here + (int) values->size(), &value, &detail) || value > 0xfff)
 			{
-				*problem = "bad value '" + item + "' for dw";
+				*problem = "bad value '" + item + "' for dw" + parenthesized(detail);
 				return false;
 			}
 			values->push_back(value);
@@ -312,20 +621,336 @@ namespace
 		bool autopage;		// CODE: page instructions are inserted
 		int address;		// where the item (or its inserted pages) starts
 		bool boundaryPage;	// CODE: a page instruction in front, the code runs into a new page
+		string origin;		// where a line from a macro comes from, e.g. "macro wait, line 3"; empty otherwise
 	};
 
-	// Cuts the source into items.
-	bool parseSource(const string& source, vector<Item>* items, string* error)
+	string decimalText(int value)
+	{
+		ostringstream out;
+		out << value;
+		return out.str();
+	}
+
+	// "line N: message (in macro name, line M)": origin tells where in a macro the line is
+	string positionError(int number, const string& origin, const string& message)
+	{
+		return lineError(number, message + parenthesized(origin.empty() ? "" : "in " + origin));
+	}
+
+	string itemError(const Item& item, const string& message)
+	{
+		return positionError(item.number, item.origin, message);
+	}
+
+	struct Line
+	{
+		int number;		// line of the source; for the lines of a macro the line of its call
+		string text;		// without comment and without blanks around it
+		string origin;		// like Item::origin
+	};
+
+	struct Macro
+	{
+		int number;		// line of the definition
+		vector<string> params;
+		vector<string> locals;	// names that are different in every expansion
+		vector<string> body;
+		vector<int> bodyLines;	// the line of the source of every line of the body
+	};
+	typedef map<string, Macro> Macros;
+
+	const int MAX_MACRO_DEPTH = 16;
+	const size_t MAX_EXPANDED_LINES = 100000;
+
+	// a word that starts a line of the assembler and so cannot name a macro
+	bool isDirective(const string& word)
+	{
+		return word == "org" || word == "firsthalf" || word == "samepage" || word == "autopage" || word == "dw" ||
+			word == "equ" || word == "macro" || word == "endm" || word == "local";
+	}
+
+	bool isMnemonic(const string& word)
+	{
+		static set<string> mnemonics;
+		if (mnemonics.empty())
+		{
+			for (unsigned op = 0; op < 0x1000; op++)
+			{
+				string text = disassemble((unsigned short) op);
+				if (text == "unused" || text.compare(0, 8, "not impl") == 0)
+					continue;
+				string rest;
+				mnemonics.insert(splitWord(normalize(text), &rest));
+			}
+		}
+		return mnemonics.count(word) != 0;
+	}
+
+	// "a, b, c" -> names; each must be a name that is in neither list so far
+	bool addNames(const string& text, vector<string>* names, const vector<string>& others, string* problem)
+	{
+		if (text.empty())
+			return true;
+		for (size_t from = 0;;)
+		{
+			size_t comma = text.find(',', from);
+			string name = trim(text.substr(from, comma == string::npos ? string::npos : comma - from));
+			if (!isName(name) || isReservedWord(lowerCase(name)))
+			{
+				*problem = "bad name '" + name + "'";
+				return false;
+			}
+			if (find(names->begin(), names->end(), name) != names->end() || find(others.begin(), others.end(), name) != others.end())
+			{
+				*problem = name + " is used twice";
+				return false;
+			}
+			names->push_back(name);
+			if (comma == string::npos)
+				return true;
+			from = comma + 1;
+		}
+	}
+
+	// the arguments of a macro call: "a, b" or "(a, b)"
+	bool splitArguments(const string& text, vector<string>* args, string* problem)
+	{
+		string inner = text;
+		if (!inner.empty() && inner[0] == '(')
+		{
+			// the parentheses around all arguments, not around the first one only: "(a+1), b"
+			size_t close = string::npos;
+			int open = 0;
+			for (size_t i = 0; i < inner.size() && close == string::npos; i++)
+			{
+				if (inner[i] == '(')
+					open++;
+				else if (inner[i] == ')' && --open == 0)
+					close = i;
+			}
+			if (close == string::npos)
+			{
+				*problem = "missing ) after the arguments";
+				return false;
+			}
+			if (close == inner.size() - 1)
+				inner = trim(inner.substr(1, inner.size() - 2));
+		}
+		if (inner.empty())
+			return true;
+		for (size_t from = 0;;)
+		{
+			size_t comma = inner.find(',', from);
+			string arg = trim(inner.substr(from, comma == string::npos ? string::npos : comma - from));
+			if (arg.empty())
+			{
+				*problem = "empty argument";
+				return false;
+			}
+			args->push_back(arg);
+			if (comma == string::npos)
+				return true;
+			from = comma + 1;
+		}
+	}
+
+	// the names in the text that are keys of values are replaced, in one pass
+	string substitute(const string& text, const map<string, string>& values)
+	{
+		string out;
+		for (size_t i = 0; i < text.size();)
+		{
+			if (!isNameChar(text[i]))
+			{
+				out += text[i++];
+				continue;
+			}
+			size_t end = i;
+			while (end < text.size() && isNameChar(text[end]))
+				end++;
+			string word = text.substr(i, end - i);
+			map<string, string>::const_iterator found = values.find(word);
+			out += found == values.end() ? word : found->second;
+			i = end;
+		}
+		return out;
+	}
+
+	// Appends the line to `out`; the call of a macro is replaced by its body (which can call
+	// macros again). A label in front of a call is kept in front of the first line. origin is
+	// where `text` comes from if it is a line of a macro.
+	bool expandLine(const string& text, int number, int depth, const Macros& macros, int* counter, const string& origin,
+		vector<Line>* out, string* error)
+	{
+		if (out->size() > MAX_EXPANDED_LINES)
+		{
+			*error = positionError(number, origin, "the macros expand to too many lines");
+			return false;
+		}
+		string label;
+		string rest = text;
+		size_t colon = text.find(':');
+		if (colon != string::npos)
+		{
+			label = trim(text.substr(0, colon));
+			rest = trim(text.substr(colon + 1));
+		}
+		size_t end = rest.find_first_of(" \t(");
+		string name = rest.substr(0, end);
+		Macros::const_iterator found = macros.find(name);
+		if (found == macros.end())
+		{
+			Line line = { number, text, origin };
+			out->push_back(line);
+			return true;
+		}
+
+		const Macro& macro = found->second;
+		if (depth >= MAX_MACRO_DEPTH)
+		{
+			*error = positionError(number, origin, "macro " + name + " is nested too deeply (does it call itself?)");
+			return false;
+		}
+		vector<string> args;
+		string problem;
+		if (!splitArguments(end == string::npos ? "" : trim(rest.substr(end)), &args, &problem))
+		{
+			*error = positionError(number, origin, problem + " in the call of macro " + name);
+			return false;
+		}
+		if (args.size() != macro.params.size())
+		{
+			ostringstream message;
+			message << "macro " << name << " takes " << macro.params.size() << " arguments, not " << args.size();
+			*error = positionError(number, origin, message.str());
+			return false;
+		}
+
+		map<string, string> values;
+		for (size_t i = 0; i < args.size(); i++)
+			values[macro.params[i]] = args[i];
+		(*counter)++;
+		for (size_t i = 0; i < macro.locals.size(); i++)
+		{
+			ostringstream unique;
+			unique << macro.locals[i] << "__" << *counter;
+			values[macro.locals[i]] = unique.str();
+		}
+
+		if (!label.empty())
+		{
+			Line line = { number, label + ":", origin };
+			out->push_back(line);
+		}
+		for (size_t i = 0; i < macro.body.size(); i++)
+		{
+			string where = "macro " + name + ", line " + decimalText(macro.bodyLines[i]);
+			if (!origin.empty())
+				where += ", called from " + origin;
+			if (!expandLine(substitute(macro.body[i], values), number, depth + 1, macros, counter, where, out, error))
+				return false;
+		}
+		return true;
+	}
+
+	// Cuts the source into lines, takes the macro definitions out and expands the calls.
+	bool expandSource(const string& source, vector<Line>* lines, string* error)
 	{
 		istringstream in(source);
 		string raw;
 		int number = 0;
-		bool autopage = false;
+		Macros macros;
+		int counter = 0;
+		string defining;	// the name of the macro whose body is being read
+		Macro macro = Macro();
 		while (getline(in, raw))
 		{
 			number++;
 			string text = trim(raw.substr(0, raw.find(';')));
-			Item item = { number, NOTHING, "", "", "", autopage, 0, false };
+			string rest;
+			string keyword = lowerCase(splitWord(text, &rest));
+			string rest2;
+			string second = lowerCase(splitWord(rest, &rest2));
+			string problem;
+
+			if (!defining.empty())
+			{
+				if (keyword == "endm")
+				{
+					if (!rest.empty())
+					{
+						*error = lineError(number, "endm takes no operands");
+						return false;
+					}
+					macros[defining] = macro;
+					defining.clear();
+				}
+				else if (keyword == "macro" || second == "macro")
+				{
+					*error = lineError(number, "a macro cannot be defined inside of a macro");
+					return false;
+				}
+				else if (keyword == "local")
+				{
+					if (rest.empty() || !addNames(rest, &macro.locals, macro.params, &problem))
+					{
+						*error = lineError(number, rest.empty() ? "local needs a name" : problem);
+						return false;
+					}
+				}
+				else if (!text.empty())
+				{
+					macro.body.push_back(text);
+					macro.bodyLines.push_back(number);
+				}
+			}
+			else if (second == "macro")
+			{
+				string name = text.substr(0, text.find_first_of(" \t"));
+				if (!isName(name) || isReservedWord(lowerCase(name)) || isMnemonic(lowerCase(name)) || isDirective(lowerCase(name)))
+				{
+					*error = lineError(number, "bad macro name '" + name + "'");
+					return false;
+				}
+				if (macros.count(name))
+				{
+					*error = lineError(number, "macro " + name + " is defined twice");
+					return false;
+				}
+				macro = Macro();
+				macro.number = number;
+				if (!addNames(rest2, &macro.params, vector<string>(), &problem))
+				{
+					*error = lineError(number, problem + " in the parameters of macro " + name);
+					return false;
+				}
+				defining = name;
+			}
+			else if (keyword == "macro" || keyword == "endm" || keyword == "local")
+			{
+				*error = lineError(number, keyword == "macro" ? "macro needs a name in front of it" : keyword + " outside of a macro");
+				return false;
+			}
+			else if (!text.empty() && !expandLine(text, number, 0, macros, &counter, "", lines, error))
+				return false;
+		}
+		if (!defining.empty())
+		{
+			*error = lineError(macro.number, "macro " + defining + " has no endm");
+			return false;
+		}
+		return true;
+	}
+
+	// Cuts the source into items.
+	bool parseSource(const vector<Line>& lines, vector<Item>* items, string* error)
+	{
+		bool autopage = false;
+		for (size_t index = 0; index < lines.size(); index++)
+		{
+			int number = lines[index].number;
+			string text = lines[index].text;
+			Item item = { number, NOTHING, "", "", "", autopage, 0, false, lines[index].origin };
 
 			size_t colon = text.find(':');
 			if (colon != string::npos)
@@ -333,7 +958,7 @@ namespace
 				item.label = trim(text.substr(0, colon));
 				if (!isName(item.label) || isReservedWord(lowerCase(item.label)))
 				{
-					*error = lineError(number, "bad name '" + item.label + "'");
+					*error = positionError(number, item.origin, "bad name '" + item.label + "'");
 					return false;
 				}
 				text = trim(text.substr(colon + 1));
@@ -363,7 +988,7 @@ namespace
 				string mode = lowerCase(rest);
 				if (mode != "on" && mode != "off")
 				{
-					*error = lineError(number, "autopage needs on or off");
+					*error = positionError(number, item.origin, "autopage needs on or off");
 					return false;
 				}
 				autopage = mode == "on";
@@ -408,16 +1033,17 @@ namespace
 			bool movesAddress = item.kind == ORG || item.kind == FIRSTHALF || item.kind == SAMEPAGE;
 			if (!movesAddress && !item.label.empty() && !define(item.label, address, true, symbols, &problem))
 			{
-				*error = lineError(item.number, problem);
+				*error = itemError(item, problem);
 				return false;
 			}
 			int value;
 			switch (item.kind)
 			{
 			case ORG:
-				if (!parseValue(item.text, *symbols, &value) || value >= romSize)
+				problem.clear();
+				if (!evaluateNumber(item.text, *symbols, address, &value, &problem) || value >= romSize)
 				{
-					*error = lineError(item.number, "bad org address");
+					*error = itemError(item, "bad org address" + parenthesized(problem));
 					return false;
 				}
 				address = value;
@@ -429,7 +1055,7 @@ namespace
 					address = (address | (PAGE_WORDS - 1)) + 1;
 					if (address >= romSize)
 					{
-						*error = lineError(item.number, "firsthalf moves beyond the end of the ROM");
+						*error = itemError(item, "firsthalf moves beyond the end of the ROM");
 						return false;
 					}
 					sequential = false;
@@ -438,9 +1064,10 @@ namespace
 			case SAMEPAGE:
 			{
 				int size;
-				if (!parseValue(item.text, *symbols, &size) || size < 1 || size > PAGE_WORDS)
+				problem.clear();
+				if (!evaluateNumber(item.text, *symbols, address, &size, &problem) || size < 1 || size > PAGE_WORDS)
 				{
-					*error = lineError(item.number, "samepage needs a number of words from 1 to 200");
+					*error = itemError(item, "samepage needs a number of words from 1 to 200" + parenthesized(problem));
 					return false;
 				}
 				if ((address % PAGE_WORDS) + size > PAGE_WORDS)
@@ -448,7 +1075,7 @@ namespace
 					address = (address | (PAGE_WORDS - 1)) + 1;
 					if (address >= romSize)
 					{
-						*error = lineError(item.number, "samepage moves beyond the end of the ROM");
+						*error = itemError(item, "samepage moves beyond the end of the ROM");
 						return false;
 					}
 					sequential = false;
@@ -456,14 +1083,15 @@ namespace
 				break;
 			}
 			case EQU:
-				if (!parseValue(item.text, *symbols, &value) || value > 0xfff)
+				problem.clear();
+				if (!evaluateNumber(item.text, *symbols, address, &value, &problem) || value > 0xfff)
 				{
-					*error = lineError(item.number, "bad value '" + item.text + "' for equ");
+					*error = itemError(item, "bad value '" + item.text + "' for equ" + parenthesized(problem));
 					return false;
 				}
 				if (!define(item.name, value, false, symbols, &problem))
 				{
-					*error = lineError(item.number, problem);
+					*error = itemError(item, problem);
 					return false;
 				}
 				break;
@@ -483,7 +1111,7 @@ namespace
 				item.address = address;
 				if (!item.label.empty() && !define(item.label, address, true, symbols, &problem))
 				{
-					*error = lineError(item.number, problem);
+					*error = itemError(item, problem);
 					return false;
 				}
 			}
@@ -500,10 +1128,11 @@ namespace
 		string mnemonic = lowerCase(splitWord(item.text, &operand));
 		if (mnemonic != "jmp" && mnemonic != "call")
 			return false;
-		Symbols::const_iterator target = symbols.find(operand);
-		if (target == symbols.end() || !target->second.label)
+		Value target;
+		string problem;
+		if (!Expression(operand, symbols, item.address).evaluate(&target, &problem) || !target.label || target.number < 0)
 			return false;
-		*page = target->second.value >> 9;
+		*page = (int) (target.number >> 9);
 		return *page != item.address >> 9;
 	}
 
@@ -521,8 +1150,11 @@ bool assembleSource(const string& source, unsigned short* rom, int romSize, stri
 	for (int i = 0; i < romSize; i++)
 		rom[i] = 0xfff;
 
+	vector<Line> lines;
+	if (!expandSource(source, &lines, error))
+		return false;
 	vector<Item> items;
-	if (!parseSource(source, &items, error))
+	if (!parseSource(lines, &items, error))
 		return false;
 
 	// A page instruction moves the addresses behind it, which can change the
@@ -567,9 +1199,9 @@ bool assembleSource(const string& source, unsigned short* rom, int romSize, stri
 		vector<int> words;
 		if (item.kind == DW)
 		{
-			if (!dataValues(item.text, symbols, &words, &problem))
+			if (!dataValues(item.text, symbols, item.address, &words, &problem))
 			{
-				*error = lineError(item.number, problem);
+				*error = itemError(item, problem);
 				return false;
 			}
 		}
@@ -581,21 +1213,21 @@ bool assembleSource(const string& source, unsigned short* rom, int romSize, stri
 				words.push_back(0x010 | extraPage[i]);
 			string resolved;
 			unsigned short opcode;
-			if (!substituteNames(item.text, symbols, &resolved, &problem))
+			if (!substituteNames(item.text, symbols, item.address + (int) words.size(), &resolved, &problem))
 			{
-				*error = lineError(item.number, problem);
+				*error = itemError(item, problem);
 				return false;
 			}
 			if (!assemble(resolved, &opcode))
 			{
-				*error = lineError(item.number, "cannot assemble '" + item.text + "'");
+				*error = itemError(item, "cannot assemble '" + item.text + "'");
 				return false;
 			}
 			words.push_back(opcode);
 		}
 		if (item.address + (int) words.size() > romSize)
 		{
-			*error = lineError(item.number, "address beyond the end of the ROM");
+			*error = itemError(item, "address beyond the end of the ROM");
 			return false;
 		}
 		for (size_t w = 0; w < words.size(); w++)
@@ -603,7 +1235,7 @@ bool assembleSource(const string& source, unsigned short* rom, int romSize, stri
 			int target = item.address + (int) w;
 			if (written[target])
 			{
-				*error = lineError(item.number, "address " + hexText(target) + " is used twice");
+				*error = itemError(item, "address " + hexText(target) + " is used twice");
 				return false;
 			}
 			written[target] = true;
