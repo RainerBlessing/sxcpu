@@ -10,7 +10,7 @@ dependency on SDL, wxWidgets or curses.
   value, a front end implements it. Pass `NULL` for a CPU without any device.
 - `disassemble()` (`disasm.h`): opcode to text for a debugger.
 - `assemble()` (`asm.h`): one line of assembler to an opcode, the reverse of `disassemble()`.
-- `assembleSource()` (`asm.h`): a whole source text with labels, `org`, `equ` and `dw` into a ROM image.
+- `assembleSource()` (`asm.h`): a whole source text with labels, `org`, `equ`, `dw`, expressions (`jmp loop+1`, `#~(1<<3)`, `$`, `d'10'`) and macros (`name macro a, b` ... `endm`) into a ROM image.
 
 ## Use it
 
